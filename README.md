@@ -14,18 +14,21 @@ Telegram Desktop -> SOCKS5 127.0.0.1:1080 -> tg-ws-proxy -> WSS -> Telegram DC
 - с `systemd --user` unit;
 - с helper-командой для `tg://socks`.
 
+Документация проекта:
+- план работ: [`PLAN.md`](PLAN.md)
+- журнал изменений: [`CHANGELOG.md`](CHANGELOG.md)
+
+Целевая среда проекта:
+- `Linux Mint 22.3 (Zena)`
+- `conda` env `p313`
+- Python из `p313`: `/home/alex/miniconda3/envs/p313/bin/python`
+- Текущая версия разработки: `0.2.0`
+
 ## Установка
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
+conda activate p313
 pip install -r requirements.txt
-```
-
-Или:
-
-```bash
-pip install .
 ```
 
 ## Быстрый старт
@@ -33,25 +36,25 @@ pip install .
 Создать конфиг:
 
 ```bash
-python3 tg_ws_proxy.py init-config
+conda run -n p313 python tg_ws_proxy.py init-config
 ```
 
 Узнать пути:
 
 ```bash
-python3 tg_ws_proxy.py paths
+conda run -n p313 python tg_ws_proxy.py paths
 ```
 
 Запустить прокси:
 
 ```bash
-python3 tg_ws_proxy.py run
+conda run -n p313 python tg_ws_proxy.py run
 ```
 
 Открыть настройку прокси в Telegram Desktop:
 
 ```bash
-python3 tg_ws_proxy.py open-in-telegram
+conda run -n p313 python tg_ws_proxy.py open-in-telegram
 ```
 
 Если `tg://` handler не сработал, настройте Telegram Desktop вручную:
@@ -87,6 +90,10 @@ python3 tg_ws_proxy.py open-in-telegram
 
 ## systemd --user
 
+Unit уже настроен под интерпретатор:
+
+`/home/alex/miniconda3/envs/p313/bin/python`
+
 Скопировать unit:
 
 ```bash
@@ -108,3 +115,4 @@ journalctl --user -u tg-ws-proxy.service -f
 - Базовая установка Linux-версии требует только `cryptography`.
 - Проверка TLS по умолчанию отключена для совместимости с исходной реализацией. Для более строгого режима запускайте с `--verify-tls`.
 - Локальный listen host по умолчанию `127.0.0.1`, чтобы не открыть SOCKS5 наружу.
+- Для всех проверок и запуска по умолчанию используется `conda` env `p313`.

@@ -112,7 +112,22 @@ class ProxyWindow(Gtk.ApplicationWindow):
 
         self.verbose_check = Gtk.CheckButton(label="Verbose logging")
         self.verbose_check.set_active(bool(self.cfg.get("verbose", False)))
+        self.verbose_check.set_tooltip_text(
+            "Включать подробный лог уровня DEBUG. "
+            "Полезно для диагностики, но лог становится значительно шумнее."
+        )
         grid.attach(self.verbose_check, 0, 1, 2, 1)
+
+        verbose_hint = Gtk.Label(
+            label=(
+                "Verbose logging: включает подробный технический лог для отладки. "
+                "Для обычной работы обычно лучше держать выключенным."
+            ),
+            xalign=0,
+        )
+        verbose_hint.set_line_wrap(True)
+        verbose_hint.set_max_width_chars(80)
+        settings_box.pack_start(verbose_hint, False, False, 0)
 
         self.verify_tls_check = Gtk.CheckButton(label="Verify TLS")
         self.verify_tls_check.set_active(bool(self.cfg.get("verify_tls", False)))

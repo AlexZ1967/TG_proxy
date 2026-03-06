@@ -23,7 +23,7 @@ Telegram Desktop -> SOCKS5 127.0.0.1:1080 -> tg-ws-proxy -> WSS -> Telegram DC
 - `Linux Mint 22.3 (Zena)`
 - Python `3.10+`
 - переносимый запуск через shell launcher'ы
-- Текущая версия разработки: `0.3.0`
+- Текущая версия разработки: `0.4.0`
 
 ## Установка
 
@@ -147,6 +147,17 @@ journalctl --user -u tg-ws-proxy.service -f
 - Базовая установка Linux-версии требует только `cryptography`.
 - Проверка TLS по умолчанию отключена для совместимости с исходной реализацией. Для более строгого режима запускайте с `--verify-tls`.
 - Локальный listen host по умолчанию `127.0.0.1`, чтобы не открыть SOCKS5 наружу.
-- GUI сделан на `tkinter`, чтобы не тащить тяжёлые desktop-зависимости.
 - GUI сделан на GTK3 (`PyGObject`), чтобы использовать нативные системные шрифты и виджеты Linux Mint.
 - `conda` можно использовать, но проект больше не привязан к нему.
+
+## Linux Mint Launcher
+
+Для запуска из меню Linux Mint можно установить `.desktop` launcher:
+
+```bash
+mkdir -p ~/.local/share/applications
+cp desktop/tg-proxy.desktop ~/.local/share/applications/
+update-desktop-database ~/.local/share/applications >/dev/null 2>&1 || true
+```
+
+После этого приложение `TG Proxy` появится в меню. Если проект лежит в другом каталоге, поправьте `Exec=` и `Path=` в [`desktop/tg-proxy.desktop`](desktop/tg-proxy.desktop).

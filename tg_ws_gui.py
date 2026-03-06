@@ -116,7 +116,23 @@ class ProxyWindow(Gtk.ApplicationWindow):
 
         self.verify_tls_check = Gtk.CheckButton(label="Verify TLS")
         self.verify_tls_check.set_active(bool(self.cfg.get("verify_tls", False)))
+        self.verify_tls_check.set_tooltip_text(
+            "Проверять TLS-сертификат и имя хоста при WSS-подключении. "
+            "Безопаснее, но может ломать совместимость. "
+            "Если прокси уже работает стабильно, обычно лучше оставить выключенным."
+        )
         grid.attach(self.verify_tls_check, 2, 1, 2, 1)
+
+        tls_hint = Gtk.Label(
+            label=(
+                "Verify TLS: включает строгую проверку сертификата и имени хоста для WSS. "
+                "Безопаснее, но иногда мешает подключению."
+            ),
+            xalign=0,
+        )
+        tls_hint.set_line_wrap(True)
+        tls_hint.set_max_width_chars(80)
+        settings_box.pack_start(tls_hint, False, False, 0)
 
         mappings_label = Gtk.Label(label="DC -> IP mappings", xalign=0)
         settings_box.pack_start(mappings_label, False, False, 0)

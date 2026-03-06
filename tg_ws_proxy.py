@@ -842,6 +842,10 @@ class ProxyServer:
             asyncio.create_task(wait_stop())
 
         log.info("Listening on %s:%d", self.listen_host, self.port)
+        log.info(
+            "TLS verification: %s",
+            "enabled" if self.ssl_ctx.verify_mode != ssl.CERT_NONE else "disabled",
+        )
         for dc, ip in sorted(self.dc_opt.items()):
             log.info("DC%d via %s", dc, ip)
 

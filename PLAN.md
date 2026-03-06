@@ -18,7 +18,9 @@
 - `done`: собран Linux MVP прокси
 - `done`: подготовка репозитория к публикации
 - `done`: первичная публикация в GitHub
-- `in_progress`: подготовка к проверке с Telegram Desktop на Linux
+- `done`: portable-запуск подтверждён на Linux Mint
+- `done`: работа с Telegram Desktop подтверждена на живом трафике
+- `in_progress`: desktop-интеграция и упаковка под Linux Mint
 
 ## Work Plan
 
@@ -31,21 +33,25 @@
    Результат: настроенный `origin`, основной бранч `main`, первый push в `AlexZ1967/TG_proxy`.
 
 3. Проверить установку и запуск на Linux.
-   Статус: `pending`
+   Статус: `done`
    Результат: подтвержденный portable-запуск через launcher, проверка `tg://socks` и ручной настройки Telegram Desktop.
 
 4. Подготовить автозапуск через `systemd --user`.
-   Статус: `pending`
-   Результат: установленный unit через portable launcher и проверка через `systemctl --user status`.
+   Статус: `deferred`
+   Результат: unit оставлен как опциональный путь; основной рабочий режим выбран ручной через GUI.
 
 5. Проверить работу с реальным Telegram Desktop.
-   Статус: `pending`
+   Статус: `done`
    Результат: подтверждение, что трафик Telegram идет через локальный SOCKS5 и нет явных регрессий.
 
 6. Ужесточить и стабилизировать проект.
-   Статус: `pending`
+   Статус: `in_progress`
    Результат: решение по TLS verification, дополнительным DC mapping, логированию, обработке ошибок и portable packaging.
+
+7. Добавить desktop-интеграцию для Linux Mint.
+   Статус: `in_progress`
+   Результат: `.desktop` launcher для GTK GUI и краткая инструкция по установке в пользовательское меню.
 
 ## Immediate Next Step
 
-Проверить работу прокси с реальным Telegram Desktop на Linux и подтвердить рабочую схему подключения.
+Добавить `.desktop` launcher для GTK GUI и завершить desktop-интеграцию под Linux Mint.

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=TG Proxy
+Comment=Local Telegram Desktop proxy controller
+Exec=/home/alex/Telegram/tg_proxy/run_gui.sh
+Path=/home/alex/Telegram/tg_proxy
+Icon=network-server
+Terminal=false
+Categories=Network;
+StartupNotify=true

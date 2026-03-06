@@ -1,0 +1,14 @@
+[Unit]
+Description=Telegram WebSocket bridge proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Telegram/tg_proxy
+ExecStart=/usr/bin/env python3 %h/Telegram/tg_proxy/tg_ws_proxy.py run
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

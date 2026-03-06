@@ -22,7 +22,8 @@
 - `done`: работа с Telegram Desktop подтверждена на живом трафике
 - `done`: desktop-интеграция и упаковка под Linux Mint
 - `done`: подготовка resilience roadmap для следующего минорного цикла
-- `in_progress`: первый этап roadmap, profile-aware конфиг и переключение профилей
+- `done`: первый этап roadmap, profile-aware конфиг и переключение профилей
+- `in_progress`: практический backup-режим для `mtproto_external`
 
 ## Work Plan
 
@@ -59,9 +60,13 @@
    Результат: зафиксированный backlog по backup transport, профилям переключения, диагностике DNS/IPv4/IPv6 и интеграции с MTProxy без самописной реализации MTProto с нуля.
 
 9. Перевести проект на profile-aware конфиг и переключение профилей.
-   Статус: `in_progress`
+   Статус: `done`
    Результат: новый формат `active_profile + profiles`, GUI selector активного профиля, совместимая миграция со старого плоского `config.json`.
+
+10. Довести `mtproto_external` до практического backup-режима.
+   Статус: `in_progress`
+   Результат: валидация `server:port`, `tg://proxy` export/open, `Copy Link`, GUI self-check и CLI `check-profile`.
 
 ## Immediate Next Step
 
-Довести `mtproto_external` до практического backup-режима: валидация полей, открытие `tg://proxy`, UX для переключения без ручной правки конфига.
+Перейти к `M4 Diagnostics`: добавить единые диагностические статусы и расширенный self-test для `DNS/IPv4/IPv6/WSS`.

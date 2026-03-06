@@ -10,6 +10,7 @@
 - GUI selector активного профиля с поддержкой `wss_local`, `mtproto_external`, `mtproto_sidecar` и `direct_disabled`.
 - Общий helper для `tg://socks` и `tg://proxy`, чтобы `Open Telegram` мог работать от активного профиля.
 - Кнопка `Copy Link` в GUI для копирования готового `tg://socks` / `tg://proxy` link от активного профиля.
+- CLI-команда `check-profile` и кнопка `Check Profile` в GUI для проверки активного маршрута.
 
 ### Changed
 
@@ -17,6 +18,7 @@
 - В проект добавлен формализованный roadmap следующего этапа: backup через внешний или sidecar `MTProxy`, профили переключения и сетевая диагностика.
 - GUI и CLI переведены на profile-aware конфиг с совместимой миграцией legacy-JSON без `profiles`.
 - Для MTProto-профилей добавлена ранняя валидация `server:port` перед открытием Telegram или копированием proxy link.
+- Для `mtproto_external` добавлен практический self-check: resolve и TCP probe до target endpoint.
 
 ## [0.3.0] - 2026-03-06
 

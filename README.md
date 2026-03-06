@@ -63,9 +63,15 @@ python3 -m venv .venv
 ./run_gui.sh
 ```
 
-Кнопки `Open Telegram` и `Copy Link` теперь работают от активного профиля:
+Кнопки `Check Profile`, `Open Telegram` и `Copy Link` работают от активного профиля:
 - `wss_local` -> `tg://socks`
 - `mtproto_external` / `mtproto_sidecar` -> `tg://proxy`
+
+Проверить активный профиль из CLI:
+
+```bash
+./run_proxy.sh check-profile
+```
 
 Открыть настройку прокси в Telegram Desktop:
 
@@ -181,6 +187,7 @@ journalctl --user -u tg-ws-proxy.service -f
 - `conda` можно использовать, но проект больше не привязан к нему.
 - GUI теперь работает с profile-aware конфигом: активный профиль выбирается прямо в окне и сохраняется в `config.json`.
 - Для MTProto-профилей GUI теперь умеет копировать готовый `tg://proxy` link и заранее валидирует `server:port`.
+- В CLI доступна команда `check-profile`, чтобы быстро проверить активный или указанный профиль без запуска GUI.
 
 ## Следующий этап
 

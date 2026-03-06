@@ -279,6 +279,39 @@ def validate_profile_telegram_target(profile: dict[str, Any]) -> str:
     return url
 
 
+def check_profile(profile: dict[str, Any], timeout: float = 3.0) -> tuple[bool, str]:
+    profile_type = str(profile.get("type", PROFILE_DIRECT_DISABLED))
+    name = str(profile.get("name") or profile.get("id") or "profile")
+
+    if profile_type == PROFILE_WSS_LOCAL:
+        runtime_cfg = runtime_config_from_profile(profile)
+        parse_dc_ip_list(list(runtime_cfg["dc_ip"]))
+        host = str(runtime_cfg["listen_host"])
+        port = int(runtime_cfg["port"])
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            try:
+                listening = sock.connect_ex((host, port)) == 0
+            except OSError as exc:
+                return False, f"{name}: cannot check local endpoint {host}:{port}: {exc}"
+        if listening:
+            return True, f"{name}: local WSS endpoint is listening on {host}:{port}"
+        return True, f"{name}: config is valid, local WSS endpoint will use {host}:{port}"
+
+    if profile_type in {PROFILE_MTPROTO_EXTERNAL, PROFILE_MTPROTO_SIDECAR}:
+        url = validate_profile_telegram_target(profile)
+        server = str(profile.get("server") or profile.get("listen_host") or "").strip()
+        port = int(profile.get("port", 443))
+        try:
+            with _socket.create_connection((server, port), timeout=timeout):
+                pass
+        except OSError as exc:
+            return False, f"{name}: TCP connect to {server}:{port} failed: {exc}"
+        return True, f"{name}: reachable target {server}:{port}; link ready: {url}"
+
+    return True, f"{name}: profile is disabled and does not expose a proxy target"
+
+
 def open_telegram_url(url: str) -> str:
 
     try:
@@ -1164,6 +1197,18 @@ def cmd_paths(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_profile(args: argparse.Namespace) -> int:
+    cfg = load_config(Path(args.config).expanduser() if args.config else None)
+    profile = get_profile(cfg, getattr(args, "profile", None))
+    try:
+        ok, message = check_profile(profile)
+    except ValueError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    print(("OK: " if ok else "FAIL: ") + message)
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Telegram Desktop WebSocket bridge proxy for Linux")
     subparsers = parser.add_subparsers(dest="command")
@@ -1187,6 +1232,11 @@ def build_parser() -> argparse.ArgumentParser:
     open_parser.add_argument("--config", help="Path to config.json")
     open_parser.add_argument("--profile", help="Profile id; defaults to active_profile")
     open_parser.set_defaults(func=cmd_open)
+
+    check_parser = subparsers.add_parser("check-profile", help="Validate and probe the selected profile")
+    check_parser.add_argument("--config", help="Path to config.json")
+    check_parser.add_argument("--profile", help="Profile id; defaults to active_profile")
+    check_parser.set_defaults(func=cmd_check_profile)
 
     paths_parser = subparsers.add_parser("paths", help="Print XDG config and log paths")
     paths_parser.set_defaults(func=cmd_paths)
@@ -1212,6 +1262,7 @@ def main() -> int:
         "run",
         "init-config",
         "open-in-telegram",
+        "check-profile",
         "paths",
         "-h",
         "--help",

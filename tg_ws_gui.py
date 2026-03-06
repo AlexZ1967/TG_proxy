@@ -36,6 +36,7 @@ class ProxyWindow(Gtk.ApplicationWindow):
         self.profile_combo: Gtk.ComboBoxText
         self.profile_name_entry: Gtk.Entry
         self.profile_type_label: Gtk.Label
+        self.profile_check_label: Gtk.Label
         self.profile_stack: Gtk.Stack
         self.host_entry: Gtk.Entry
         self.port_entry: Gtk.Entry
@@ -127,6 +128,15 @@ class ProxyWindow(Gtk.ApplicationWindow):
         profile_grid.attach(type_title, 0, 1, 1, 1)
         self.profile_type_label = Gtk.Label(xalign=0)
         profile_grid.attach(self.profile_type_label, 1, 1, 3, 1)
+
+        check_button = Gtk.Button(label="Check Profile")
+        check_button.connect("clicked", self._on_check_profile)
+        profile_grid.attach(check_button, 0, 2, 1, 1)
+
+        self.profile_check_label = Gtk.Label(xalign=0)
+        self.profile_check_label.set_line_wrap(True)
+        self.profile_check_label.set_max_width_chars(90)
+        profile_grid.attach(self.profile_check_label, 1, 2, 3, 1)
 
         self.profile_stack = Gtk.Stack()
         self.profile_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
@@ -388,6 +398,15 @@ class ProxyWindow(Gtk.ApplicationWindow):
         mark = buffer.create_mark(None, buffer.get_end_iter(), False)
         self.log_view.scroll_mark_onscreen(mark)
 
+    def _set_profile_check_result(self, ok: Optional[bool], message: str) -> None:
+        escaped = GLib.markup_escape_text(message)
+        if ok is True:
+            self.profile_check_label.set_markup(f"<span foreground='#1b7f3b'><b>OK:</b> {escaped}</span>")
+        elif ok is False:
+            self.profile_check_label.set_markup(f"<span foreground='#b42318'><b>FAIL:</b> {escaped}</span>")
+        else:
+            self.profile_check_label.set_markup(f"<span foreground='#555753'>{escaped}</span>")
+
     def _populate_profile_combo(self) -> None:
         self._changing_profile = True
         self.profile_combo.remove_all()
@@ -507,6 +526,7 @@ class ProxyWindow(Gtk.ApplicationWindow):
         }
         self.profile_type_label.set_text(type_labels.get(profile_type, profile_type))
         self.profile_stack.set_visible_child_name(profile_type)
+        self._set_profile_check_result(None, "Нажмите Check Profile для проверки активного маршрута.")
 
         if profile_type == tg_ws_proxy.PROFILE_WSS_LOCAL:
             self.host_entry.set_text(str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST))
@@ -640,8 +660,10 @@ class ProxyWindow(Gtk.ApplicationWindow):
         try:
             url = tg_ws_proxy.open_in_telegram(profile=self._selected_profile())
         except ValueError as exc:
+            self._set_profile_check_result(False, str(exc))
             self._show_message(Gtk.MessageType.ERROR, "Open Telegram failed", str(exc))
             return
+        self._set_profile_check_result(True, "Proxy link validated and sent to Telegram.")
         self._append_log_line(f"[gui] Opened {url}")
 
     def _on_copy_link(self, _: Gtk.Button) -> None:
@@ -650,13 +672,23 @@ class ProxyWindow(Gtk.ApplicationWindow):
         try:
             url = tg_ws_proxy.validate_profile_telegram_target(self._selected_profile())
         except ValueError as exc:
+            self._set_profile_check_result(False, str(exc))
             self._show_message(Gtk.MessageType.ERROR, "Copy link failed", str(exc))
             return
 
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
         clipboard.set_text(url, -1)
         clipboard.store()
+        self._set_profile_check_result(True, "Proxy link validated and copied to clipboard.")
         self._append_log_line(f"[gui] Copied {url}")
+
+    def _on_check_profile(self, _: Gtk.Button) -> None:
+        if not self._sync_selected_profile_to_cfg():
+            return
+        profile = self._selected_profile()
+        ok, message = tg_ws_proxy.check_profile(profile)
+        self._set_profile_check_result(ok, message)
+        self._append_log_line(f"[gui] Profile check: {'OK' if ok else 'FAIL'} - {message}")
 
     def _on_open_log(self, _: Gtk.Button) -> None:
         try:

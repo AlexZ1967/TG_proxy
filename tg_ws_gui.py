@@ -44,6 +44,7 @@ class ProxyWindow(Gtk.ApplicationWindow):
         self._refresh_status()
         self._poll_log()
         GLib.timeout_add_seconds(1, self._tick)
+        GLib.idle_add(self._auto_start)
 
     def _install_css(self) -> None:
         provider = Gtk.CssProvider()
@@ -268,6 +269,21 @@ class ProxyWindow(Gtk.ApplicationWindow):
             text=True,
         )
 
+    def _auto_start(self) -> bool:
+        try:
+            cfg = self.current_config()
+        except ValueError:
+            cfg = self.cfg
+
+        if self._is_listening(cfg["listen_host"], cfg["port"]):
+            self._refresh_status()
+            return False
+
+        if self.save_config():
+            self.proc = self._spawn_proxy()
+            GLib.timeout_add(700, self._refresh_status_once)
+        return False
+
     def _on_start(self, _: Gtk.Button) -> None:
         if self.proc and self.proc.poll() is None:
             self._refresh_status()
@@ -375,20 +391,6 @@ class ProxyWindow(Gtk.ApplicationWindow):
 
     def do_delete_event(self, event) -> bool:
         if self.proc and self.proc.poll() is None:
-            dialog = Gtk.MessageDialog(
-                transient_for=self,
-                flags=0,
-                message_type=Gtk.MessageType.QUESTION,
-                buttons=Gtk.ButtonsType.YES_NO,
-                text="Exit",
-            )
-            dialog.format_secondary_text(
-                "Proxy was started from this window. Stop it and close?"
-            )
-            response = dialog.run()
-            dialog.destroy()
-            if response != Gtk.ResponseType.YES:
-                return True
             self._on_stop(self.stop_button)
         return False
 

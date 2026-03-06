@@ -12,7 +12,6 @@ import struct
 import subprocess
 import sys
 import time
-import webbrowser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -92,15 +91,38 @@ def build_telegram_url(port: int, host: str = DEFAULT_HOST) -> str:
 
 def open_in_telegram(port: int, host: str = DEFAULT_HOST) -> str:
     url = build_telegram_url(port, host)
+
     try:
-        result = webbrowser.open(url)
-        if result:
-            return url
+        subprocess.run(["gio", "open", url], check=True)
+        return url
     except Exception:
         pass
 
     try:
         subprocess.run(["xdg-open", url], check=True)
+        return url
+    except Exception:
+        pass
+
+    try:
+        subprocess.run(
+            ["/home/alex/Telegram/Telegram", url],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return url
+    except Exception:
+        pass
+
+    try:
+        subprocess.run(["telegram-desktop", url], check=True)
+        return url
+    except Exception:
+        pass
+
+    try:
+        subprocess.run(["telegram", url], check=True)
         return url
     except Exception:
         return url

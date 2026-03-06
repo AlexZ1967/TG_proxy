@@ -62,6 +62,8 @@ python3 -m venv .venv
 ./run_gui.sh
 ```
 
+Кнопка `Open Telegram` в GUI сначала пытается открыть именно desktop Telegram через системный `tg://` handler.
+
 Открыть настройку прокси в Telegram Desktop:
 
 ```bash

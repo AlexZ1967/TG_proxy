@@ -63,7 +63,9 @@ python3 -m venv .venv
 ./run_gui.sh
 ```
 
-Кнопка `Open Telegram` в GUI сначала пытается открыть именно desktop Telegram через системный `tg://` handler.
+Кнопки `Open Telegram` и `Copy Link` теперь работают от активного профиля:
+- `wss_local` -> `tg://socks`
+- `mtproto_external` / `mtproto_sidecar` -> `tg://proxy`
 
 Открыть настройку прокси в Telegram Desktop:
 
@@ -87,23 +89,50 @@ python3 -m venv .venv
 
 ```json
 {
-  "listen_host": "127.0.0.1",
-  "port": 1080,
-  "dc_ip": [
-    "2:149.154.167.220",
-    "4:149.154.167.220"
+  "active_profile": "wss-local",
+  "profiles": [
+    {
+      "id": "wss-local",
+      "name": "Local WSS",
+      "type": "wss_local",
+      "listen_host": "127.0.0.1",
+      "port": 1080,
+      "dc_ip": [
+        "2:149.154.167.220",
+        "4:149.154.167.220"
+      ],
+      "verbose": false,
+      "verify_tls": false
+    },
+    {
+      "id": "mtproto-external",
+      "name": "External MTProto",
+      "type": "mtproto_external",
+      "server": "",
+      "port": 443,
+      "secret": ""
+    }
   ],
-  "verbose": false,
-  "verify_tls": false
 }
 ```
+
+Плоский legacy-конфиг без `profiles` всё ещё читается и автоматически мигрируется в эту схему при следующем сохранении.
 
 Лог:
 
 `~/.local/state/tg-ws-proxy/proxy.log`
 
-По умолчанию WS-bridge включён для `DC2` и `DC4`.
-Остальные известные DC при необходимости уходят в обычный TCP fallback.
+По умолчанию:
+- активный профиль: `wss-local`
+- WS-bridge включён для `DC2` и `DC4`
+- остальные известные DC при необходимости уходят в обычный TCP fallback
+- в GUI доступны также профили `mtproto-external`, `mtproto-sidecar` и `direct-disabled`
+
+Если активный профиль не `wss_local`, локальный proxy-процесс через `run_proxy.sh run` не запускается. В таком случае используйте `Open Telegram` или явно выбирайте runnable-профиль:
+
+```bash
+./run_proxy.sh run --profile wss-local
+```
 
 ## systemd --user
 
@@ -150,6 +179,8 @@ journalctl --user -u tg-ws-proxy.service -f
 - Локальный listen host по умолчанию `127.0.0.1`, чтобы не открыть SOCKS5 наружу.
 - GUI сделан на GTK3 (`PyGObject`), чтобы использовать нативные системные шрифты и виджеты Linux Mint.
 - `conda` можно использовать, но проект больше не привязан к нему.
+- GUI теперь работает с profile-aware конфигом: активный профиль выбирается прямо в окне и сохраняется в `config.json`.
+- Для MTProto-профилей GUI теперь умеет копировать готовый `tg://proxy` link и заранее валидирует `server:port`.
 
 ## Следующий этап
 

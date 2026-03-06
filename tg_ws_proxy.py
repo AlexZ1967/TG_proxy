@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import copy
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlencode
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
@@ -21,13 +23,57 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 APP_NAME = "tg-ws-proxy"
 DEFAULT_PORT = 1080
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_CONFIG = {
-    "listen_host": DEFAULT_HOST,
-    "port": DEFAULT_PORT,
-    "dc_ip": ["2:149.154.167.220", "4:149.154.167.220"],
-    "verbose": False,
-    "verify_tls": False,
-}
+PROFILE_WSS_LOCAL = "wss_local"
+PROFILE_MTPROTO_EXTERNAL = "mtproto_external"
+PROFILE_MTPROTO_SIDECAR = "mtproto_sidecar"
+PROFILE_DIRECT_DISABLED = "direct_disabled"
+DEFAULT_WSS_PROFILE_ID = "wss-local"
+
+
+def make_default_profiles() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": DEFAULT_WSS_PROFILE_ID,
+            "name": "Local WSS",
+            "type": PROFILE_WSS_LOCAL,
+            "listen_host": DEFAULT_HOST,
+            "port": DEFAULT_PORT,
+            "dc_ip": ["2:149.154.167.220", "4:149.154.167.220"],
+            "verbose": False,
+            "verify_tls": False,
+        },
+        {
+            "id": "mtproto-external",
+            "name": "External MTProto",
+            "type": PROFILE_MTPROTO_EXTERNAL,
+            "server": "",
+            "port": 443,
+            "secret": "",
+        },
+        {
+            "id": "mtproto-sidecar",
+            "name": "Local MTProxy Sidecar",
+            "type": PROFILE_MTPROTO_SIDECAR,
+            "listen_host": DEFAULT_HOST,
+            "port": 11080,
+            "secret": "",
+        },
+        {
+            "id": "direct-disabled",
+            "name": "Disabled",
+            "type": PROFILE_DIRECT_DISABLED,
+        },
+    ]
+
+
+def make_default_config() -> dict[str, Any]:
+    return {
+        "active_profile": DEFAULT_WSS_PROFILE_ID,
+        "profiles": make_default_profiles(),
+    }
+
+
+DEFAULT_CONFIG = make_default_config()
 
 log = logging.getLogger(APP_NAME)
 
@@ -60,10 +106,95 @@ def ensure_dirs() -> None:
     state_dir().mkdir(parents=True, exist_ok=True)
 
 
+def _profile_defaults(profile_type: str, profile_id: str, name: Optional[str] = None) -> dict[str, Any]:
+    if profile_type == PROFILE_WSS_LOCAL:
+        return {
+            "id": profile_id,
+            "name": name or "Local WSS",
+            "type": PROFILE_WSS_LOCAL,
+            "listen_host": DEFAULT_HOST,
+            "port": DEFAULT_PORT,
+            "dc_ip": ["2:149.154.167.220", "4:149.154.167.220"],
+            "verbose": False,
+            "verify_tls": False,
+        }
+    if profile_type == PROFILE_MTPROTO_EXTERNAL:
+        return {
+            "id": profile_id,
+            "name": name or "External MTProto",
+            "type": PROFILE_MTPROTO_EXTERNAL,
+            "server": "",
+            "port": 443,
+            "secret": "",
+        }
+    if profile_type == PROFILE_MTPROTO_SIDECAR:
+        return {
+            "id": profile_id,
+            "name": name or "Local MTProxy Sidecar",
+            "type": PROFILE_MTPROTO_SIDECAR,
+            "listen_host": DEFAULT_HOST,
+            "port": 11080,
+            "secret": "",
+        }
+    return {
+        "id": profile_id,
+        "name": name or "Disabled",
+        "type": PROFILE_DIRECT_DISABLED,
+    }
+
+
+def _normalize_profile(profile: dict[str, Any], index: int) -> dict[str, Any]:
+    profile_id = str(profile.get("id") or f"profile-{index + 1}")
+    profile_type = str(profile.get("type") or PROFILE_DIRECT_DISABLED)
+    if profile_type not in {
+        PROFILE_WSS_LOCAL,
+        PROFILE_MTPROTO_EXTERNAL,
+        PROFILE_MTPROTO_SIDECAR,
+        PROFILE_DIRECT_DISABLED,
+    }:
+        profile_type = PROFILE_DIRECT_DISABLED
+
+    defaults = _profile_defaults(profile_type, profile_id, str(profile.get("name") or ""))
+    normalized = copy.deepcopy(defaults)
+    normalized.update(profile)
+    normalized["id"] = profile_id
+    normalized["type"] = profile_type
+    normalized["name"] = str(normalized.get("name") or defaults["name"])
+    return normalized
+
+
+def _normalize_config(data: dict[str, Any]) -> dict[str, Any]:
+    if "profiles" not in data:
+        legacy = _profile_defaults(PROFILE_WSS_LOCAL, DEFAULT_WSS_PROFILE_ID, "Local WSS")
+        for key in ("listen_host", "port", "dc_ip", "verbose", "verify_tls"):
+            if key in data:
+                legacy[key] = data[key]
+        cfg = make_default_config()
+        cfg["profiles"][0] = legacy
+        return cfg
+
+    raw_profiles = data.get("profiles")
+    if not isinstance(raw_profiles, list):
+        raise ValueError("Config field 'profiles' must be a list")
+
+    profiles = [_normalize_profile(profile, index) for index, profile in enumerate(raw_profiles) if isinstance(profile, dict)]
+    if not profiles:
+        profiles = make_default_profiles()
+
+    active_profile = str(data.get("active_profile") or profiles[0]["id"])
+    if active_profile not in {profile["id"] for profile in profiles}:
+        active_profile = profiles[0]["id"]
+
+    return {
+        "active_profile": active_profile,
+        "profiles": profiles,
+    }
+
+
 def load_config(path: Optional[Path] = None) -> dict[str, Any]:
     cfg_path = path or config_path()
     if not cfg_path.exists():
-        return dict(DEFAULT_CONFIG)
+        return copy.deepcopy(DEFAULT_CONFIG)
 
     with cfg_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
@@ -71,26 +202,84 @@ def load_config(path: Optional[Path] = None) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Config at {cfg_path} must be a JSON object")
 
-    merged = dict(DEFAULT_CONFIG)
-    merged.update(data)
-    return merged
+    return _normalize_config(data)
 
 
 def save_config(data: dict[str, Any], path: Optional[Path] = None) -> Path:
     cfg_path = path or config_path()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = _normalize_config(data)
     with cfg_path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(normalized, f, indent=2, ensure_ascii=False)
         f.write("\n")
     return cfg_path
 
 
-def build_telegram_url(port: int, host: str = DEFAULT_HOST) -> str:
+def get_profile(config: dict[str, Any], profile_id: Optional[str] = None) -> dict[str, Any]:
+    active_id = profile_id or str(config.get("active_profile") or "")
+    for profile in config.get("profiles", []):
+        if profile.get("id") == active_id:
+            return profile
+    profiles = config.get("profiles") or make_default_profiles()
+    return profiles[0]
+
+
+def profile_display_name(profile: dict[str, Any]) -> str:
+    profile_type = str(profile.get("type", PROFILE_DIRECT_DISABLED))
+    labels = {
+        PROFILE_WSS_LOCAL: "WSS",
+        PROFILE_MTPROTO_EXTERNAL: "MTProto",
+        PROFILE_MTPROTO_SIDECAR: "Sidecar",
+        PROFILE_DIRECT_DISABLED: "Disabled",
+    }
+    return f"{profile.get('name', 'Profile')} [{labels.get(profile_type, profile_type)}]"
+
+
+def build_telegram_socks_url(port: int, host: str = DEFAULT_HOST) -> str:
     return f"tg://socks?server={host}&port={port}"
 
 
-def open_in_telegram(port: int, host: str = DEFAULT_HOST) -> str:
-    url = build_telegram_url(port, host)
+def build_telegram_mtproto_url(server: str, port: int, secret: str) -> str:
+    query = urlencode({"server": server, "port": port, "secret": secret})
+    return f"tg://proxy?{query}"
+
+
+def build_profile_telegram_url(profile: dict[str, Any]) -> str:
+    profile_type = str(profile.get("type", PROFILE_DIRECT_DISABLED))
+
+    if profile_type == PROFILE_WSS_LOCAL:
+        return build_telegram_socks_url(
+            int(profile.get("port", DEFAULT_PORT)),
+            str(profile.get("listen_host") or DEFAULT_HOST),
+        )
+
+    if profile_type in {PROFILE_MTPROTO_EXTERNAL, PROFILE_MTPROTO_SIDECAR}:
+        server = str(profile.get("server") or profile.get("listen_host") or "").strip()
+        secret = str(profile.get("secret") or "").strip()
+        port = int(profile.get("port", 443))
+        if not server:
+            raise ValueError("MTProto profile server is empty")
+        if not secret:
+            raise ValueError("MTProto profile secret is empty")
+        return build_telegram_mtproto_url(server, port, secret)
+
+    raise ValueError("Disabled profile does not provide a Telegram proxy link")
+
+
+def validate_profile_telegram_target(profile: dict[str, Any]) -> str:
+    url = build_profile_telegram_url(profile)
+    profile_type = str(profile.get("type", PROFILE_DIRECT_DISABLED))
+    if profile_type in {PROFILE_MTPROTO_EXTERNAL, PROFILE_MTPROTO_SIDECAR}:
+        server = str(profile.get("server") or profile.get("listen_host") or "").strip()
+        port = int(profile.get("port", 443))
+        try:
+            _socket.getaddrinfo(server, port, proto=_socket.IPPROTO_TCP)
+        except OSError as exc:
+            raise ValueError(f"Cannot resolve MTProto server {server}:{port}: {exc}") from exc
+    return url
+
+
+def open_telegram_url(url: str) -> str:
 
     try:
         subprocess.run(["gio", "open", url], check=True)
@@ -126,6 +315,20 @@ def open_in_telegram(port: int, host: str = DEFAULT_HOST) -> str:
         return url
     except Exception:
         return url
+
+
+def open_in_telegram(
+    port: Optional[int] = None,
+    host: str = DEFAULT_HOST,
+    profile: Optional[dict[str, Any]] = None,
+) -> str:
+    if profile is None:
+        if port is None:
+            raise ValueError("port is required when profile is not provided")
+        url = build_telegram_socks_url(port, host)
+    else:
+        url = validate_profile_telegram_target(profile)
+    return open_telegram_url(url)
 
 
 def setup_logging(verbose: bool, to_file: bool = True) -> None:
@@ -871,21 +1074,38 @@ def parse_dc_ip_list(dc_ip_list: List[str]) -> Dict[int, str]:
     return parsed
 
 
+def runtime_config_from_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    if str(profile.get("type")) != PROFILE_WSS_LOCAL:
+        raise ValueError(
+            f"Profile '{profile.get('name', profile.get('id', '?'))}' is not runnable as local WSS proxy"
+        )
+
+    return {
+        "listen_host": str(profile.get("listen_host") or DEFAULT_HOST),
+        "port": int(profile.get("port", DEFAULT_PORT)),
+        "dc_ip": list(profile.get("dc_ip") or []),
+        "verbose": bool(profile.get("verbose", False)),
+        "verify_tls": bool(profile.get("verify_tls", False)),
+    }
+
+
 def normalize_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
     cfg = load_config(Path(args.config).expanduser() if args.config else None)
+    profile = get_profile(cfg, getattr(args, "profile", None))
+    runtime_cfg = runtime_config_from_profile(profile)
 
     if args.listen_host is not None:
-        cfg["listen_host"] = args.listen_host
+        runtime_cfg["listen_host"] = args.listen_host
     if args.port is not None:
-        cfg["port"] = args.port
+        runtime_cfg["port"] = args.port
     if args.dc_ip:
-        cfg["dc_ip"] = args.dc_ip
+        runtime_cfg["dc_ip"] = args.dc_ip
     if args.verbose:
-        cfg["verbose"] = True
+        runtime_cfg["verbose"] = True
     if args.verify_tls:
-        cfg["verify_tls"] = True
+        runtime_cfg["verify_tls"] = True
 
-    return cfg
+    return runtime_cfg
 
 
 async def run_from_config(cfg: dict[str, Any]) -> None:
@@ -900,7 +1120,12 @@ async def run_from_config(cfg: dict[str, Any]) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    cfg = normalize_runtime_config(args)
+    try:
+        cfg = normalize_runtime_config(args)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     setup_logging(bool(cfg.get("verbose", False)))
     log.info("Config path: %s", Path(args.config).expanduser() if args.config else config_path())
     log.info("Log path: %s", log_path())
@@ -923,7 +1148,12 @@ def cmd_init_config(args: argparse.Namespace) -> int:
 
 def cmd_open(args: argparse.Namespace) -> int:
     cfg = load_config(Path(args.config).expanduser() if args.config else None)
-    url = open_in_telegram(int(cfg["port"]), str(cfg["listen_host"]))
+    profile = get_profile(cfg, getattr(args, "profile", None))
+    try:
+        url = open_in_telegram(profile=profile)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     print(url)
     return 0
 
@@ -940,6 +1170,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run", help="Run the local SOCKS5 proxy")
     run_parser.add_argument("--config", help="Path to config.json")
+    run_parser.add_argument("--profile", help="Profile id; defaults to active_profile")
     run_parser.add_argument("--listen-host", help="Listen host; default 127.0.0.1")
     run_parser.add_argument("--port", type=int, help="SOCKS5 listen port")
     run_parser.add_argument("--dc-ip", action="append", help="DC:IP mapping; may be passed multiple times")
@@ -954,12 +1185,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     open_parser = subparsers.add_parser("open-in-telegram", help="Try to open tg://socks link")
     open_parser.add_argument("--config", help="Path to config.json")
+    open_parser.add_argument("--profile", help="Profile id; defaults to active_profile")
     open_parser.set_defaults(func=cmd_open)
 
     paths_parser = subparsers.add_parser("paths", help="Print XDG config and log paths")
     paths_parser.set_defaults(func=cmd_paths)
 
-    parser.set_defaults(func=cmd_run, command="run", config=None, listen_host=None, port=None, dc_ip=None, verbose=False, verify_tls=False)
+    parser.set_defaults(
+        func=cmd_run,
+        command="run",
+        config=None,
+        profile=None,
+        listen_host=None,
+        port=None,
+        dc_ip=None,
+        verbose=False,
+        verify_tls=False,
+    )
     return parser
 
 

@@ -21,7 +21,8 @@
 - `done`: portable-запуск подтверждён на Linux Mint
 - `done`: работа с Telegram Desktop подтверждена на живом трафике
 - `done`: desktop-интеграция и упаковка под Linux Mint
-- `in_progress`: подготовка resilience roadmap для следующего минорного цикла
+- `done`: подготовка resilience roadmap для следующего минорного цикла
+- `in_progress`: первый этап roadmap, profile-aware конфиг и переключение профилей
 
 ## Work Plan
 
@@ -54,9 +55,13 @@
    Результат: `.desktop` launcher для GTK GUI и краткая инструкция по установке в пользовательское меню.
 
 8. Спроектировать следующий этап устойчивости к блокировкам.
-   Статус: `in_progress`
+   Статус: `done`
    Результат: зафиксированный backlog по backup transport, профилям переключения, диагностике DNS/IPv4/IPv6 и интеграции с MTProxy без самописной реализации MTProto с нуля.
+
+9. Перевести проект на profile-aware конфиг и переключение профилей.
+   Статус: `in_progress`
+   Результат: новый формат `active_profile + profiles`, GUI selector активного профиля, совместимая миграция со старого плоского `config.json`.
 
 ## Immediate Next Step
 
-Зафиксировать и реализовать первый этап resilience roadmap: профили переключения и backup через внешний или sidecar MTProxy.
+Довести `mtproto_external` до практического backup-режима: валидация полей, открытие `tg://proxy`, UX для переключения без ручной правки конфига.

@@ -18,8 +18,8 @@ import tg_ws_proxy
 class ProxyWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application, config_arg: Optional[str] = None) -> None:
         super().__init__(application=app, title="TG Proxy")
-        self.set_default_size(900, 700)
-        self.set_size_request(820, 620)
+        self.set_default_size(940, 760)
+        self.set_size_request(860, 660)
         self.set_border_width(16)
 
         self.config_file = (
@@ -28,19 +28,33 @@ class ProxyWindow(Gtk.ApplicationWindow):
         self.proc: Optional[subprocess.Popen[str]] = None
         self.log_offset = 0
         self.cfg = tg_ws_proxy.load_config(self.config_file)
+        self.selected_profile_id = str(self.cfg.get("active_profile") or "")
+        self._changing_profile = False
 
         self.status_label: Gtk.Label
         self.endpoint_label: Gtk.Label
+        self.profile_combo: Gtk.ComboBoxText
+        self.profile_name_entry: Gtk.Entry
+        self.profile_type_label: Gtk.Label
+        self.profile_stack: Gtk.Stack
         self.host_entry: Gtk.Entry
         self.port_entry: Gtk.Entry
         self.verbose_check: Gtk.CheckButton
         self.verify_tls_check: Gtk.CheckButton
         self.dc_view: Gtk.TextView
+        self.mtproto_server_entry: Gtk.Entry
+        self.mtproto_port_entry: Gtk.Entry
+        self.mtproto_secret_entry: Gtk.Entry
+        self.sidecar_host_entry: Gtk.Entry
+        self.sidecar_port_entry: Gtk.Entry
+        self.sidecar_secret_entry: Gtk.Entry
         self.log_view: Gtk.TextView
         self.start_button: Gtk.Button
         self.stop_button: Gtk.Button
 
         self._build_ui()
+        self._populate_profile_combo()
+        self._load_selected_profile_into_widgets()
         self._refresh_status()
         self._poll_log()
         GLib.timeout_add_seconds(1, self._tick)
@@ -93,81 +107,48 @@ class ProxyWindow(Gtk.ApplicationWindow):
         settings_box.set_border_width(14)
         settings_frame.add(settings_box)
 
-        grid = Gtk.Grid(column_spacing=14, row_spacing=12)
-        settings_box.pack_start(grid, False, False, 0)
+        profile_grid = Gtk.Grid(column_spacing=14, row_spacing=12)
+        settings_box.pack_start(profile_grid, False, False, 0)
 
-        host_label = Gtk.Label(label="Listen host", xalign=0)
-        grid.attach(host_label, 0, 0, 1, 1)
-        self.host_entry = Gtk.Entry()
-        self.host_entry.set_text(str(self.cfg["listen_host"]))
-        self.host_entry.set_hexpand(True)
-        grid.attach(self.host_entry, 1, 0, 1, 1)
+        profile_label = Gtk.Label(label="Profile", xalign=0)
+        profile_grid.attach(profile_label, 0, 0, 1, 1)
+        self.profile_combo = Gtk.ComboBoxText()
+        self.profile_combo.set_hexpand(True)
+        self.profile_combo.connect("changed", self._on_profile_changed)
+        profile_grid.attach(self.profile_combo, 1, 0, 1, 1)
 
-        port_label = Gtk.Label(label="Port", xalign=0)
-        grid.attach(port_label, 2, 0, 1, 1)
-        self.port_entry = Gtk.Entry()
-        self.port_entry.set_width_chars(8)
-        self.port_entry.set_text(str(self.cfg["port"]))
-        grid.attach(self.port_entry, 3, 0, 1, 1)
+        profile_name_label = Gtk.Label(label="Name", xalign=0)
+        profile_grid.attach(profile_name_label, 2, 0, 1, 1)
+        self.profile_name_entry = Gtk.Entry()
+        self.profile_name_entry.set_hexpand(True)
+        profile_grid.attach(self.profile_name_entry, 3, 0, 1, 1)
 
-        self.verbose_check = Gtk.CheckButton(label="Verbose logging")
-        self.verbose_check.set_active(bool(self.cfg.get("verbose", False)))
-        self.verbose_check.set_tooltip_text(
-            "Включать подробный лог уровня DEBUG. "
-            "Полезно для диагностики, но лог становится значительно шумнее."
+        type_title = Gtk.Label(label="Type", xalign=0)
+        profile_grid.attach(type_title, 0, 1, 1, 1)
+        self.profile_type_label = Gtk.Label(xalign=0)
+        profile_grid.attach(self.profile_type_label, 1, 1, 3, 1)
+
+        self.profile_stack = Gtk.Stack()
+        self.profile_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        settings_box.pack_start(self.profile_stack, False, False, 0)
+
+        self.profile_stack.add_named(self._build_wss_page(), tg_ws_proxy.PROFILE_WSS_LOCAL)
+        self.profile_stack.add_named(
+            self._build_mtproto_page(),
+            tg_ws_proxy.PROFILE_MTPROTO_EXTERNAL,
         )
-        grid.attach(self.verbose_check, 0, 1, 2, 1)
-
-        verbose_hint = Gtk.Label(
-            label=(
-                "Verbose logging: включает подробный технический лог для отладки. "
-                "Для обычной работы обычно лучше держать выключенным."
-            ),
-            xalign=0,
+        self.profile_stack.add_named(
+            self._build_sidecar_page(),
+            tg_ws_proxy.PROFILE_MTPROTO_SIDECAR,
         )
-        verbose_hint.set_line_wrap(True)
-        verbose_hint.set_max_width_chars(80)
-        settings_box.pack_start(verbose_hint, False, False, 0)
-
-        self.verify_tls_check = Gtk.CheckButton(label="Verify TLS")
-        self.verify_tls_check.set_active(bool(self.cfg.get("verify_tls", False)))
-        self.verify_tls_check.set_tooltip_text(
-            "Проверять TLS-сертификат и имя хоста при WSS-подключении. "
-            "Безопаснее, но может ломать совместимость. "
-            "Если прокси уже работает стабильно, обычно лучше оставить выключенным."
+        self.profile_stack.add_named(
+            self._build_disabled_page(),
+            tg_ws_proxy.PROFILE_DIRECT_DISABLED,
         )
-        grid.attach(self.verify_tls_check, 2, 1, 2, 1)
-
-        tls_hint = Gtk.Label(
-            label=(
-                "Verify TLS: включает строгую проверку сертификата и имени хоста для WSS. "
-                "Безопаснее, но иногда мешает подключению."
-            ),
-            xalign=0,
-        )
-        tls_hint.set_line_wrap(True)
-        tls_hint.set_max_width_chars(80)
-        settings_box.pack_start(tls_hint, False, False, 0)
-
-        mappings_label = Gtk.Label(label="DC -> IP mappings", xalign=0)
-        settings_box.pack_start(mappings_label, False, False, 0)
-
-        mappings_scroller = Gtk.ScrolledWindow()
-        mappings_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        mappings_scroller.set_shadow_type(Gtk.ShadowType.IN)
-        mappings_scroller.set_min_content_height(120)
-        settings_box.pack_start(mappings_scroller, False, False, 0)
-
-        self.dc_view = Gtk.TextView()
-        self.dc_view.set_wrap_mode(Gtk.WrapMode.NONE)
-        self.dc_view.set_monospace(True)
-        self.dc_view.get_style_context().add_class("dc-mappings")
-        self.dc_view.get_buffer().set_text("\n".join(self.cfg["dc_ip"]))
-        mappings_scroller.add(self.dc_view)
 
         buttons_grid = Gtk.Grid(column_spacing=12, row_spacing=12)
         outer.pack_start(buttons_grid, False, False, 0)
-        for index in range(6):
+        for index in range(7):
             buttons_grid.insert_column(index)
 
         self.start_button = Gtk.Button(label="Start")
@@ -190,15 +171,20 @@ class ProxyWindow(Gtk.ApplicationWindow):
         open_button.connect("clicked", self._on_open_telegram)
         buttons_grid.attach(open_button, 3, 0, 1, 1)
 
+        copy_button = Gtk.Button(label="Copy Link")
+        copy_button.set_hexpand(True)
+        copy_button.connect("clicked", self._on_copy_link)
+        buttons_grid.attach(copy_button, 4, 0, 1, 1)
+
         log_button = Gtk.Button(label="Open Log")
         log_button.set_hexpand(True)
         log_button.connect("clicked", self._on_open_log)
-        buttons_grid.attach(log_button, 4, 0, 1, 1)
+        buttons_grid.attach(log_button, 5, 0, 1, 1)
 
         refresh_button = Gtk.Button(label="Refresh")
         refresh_button.set_hexpand(True)
         refresh_button.connect("clicked", self._on_refresh)
-        buttons_grid.attach(refresh_button, 5, 0, 1, 1)
+        buttons_grid.attach(refresh_button, 6, 0, 1, 1)
 
         log_frame = Gtk.Frame(label="Log Tail")
         outer.pack_start(log_frame, True, True, 0)
@@ -219,6 +205,161 @@ class ProxyWindow(Gtk.ApplicationWindow):
         self.log_view.set_monospace(True)
         self.log_view.get_style_context().add_class("log-tail")
         log_scroller.add(self.log_view)
+
+    def _build_wss_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+
+        grid = Gtk.Grid(column_spacing=14, row_spacing=12)
+        box.pack_start(grid, False, False, 0)
+
+        host_label = Gtk.Label(label="Listen host", xalign=0)
+        grid.attach(host_label, 0, 0, 1, 1)
+        self.host_entry = Gtk.Entry()
+        self.host_entry.set_hexpand(True)
+        grid.attach(self.host_entry, 1, 0, 1, 1)
+
+        port_label = Gtk.Label(label="Port", xalign=0)
+        grid.attach(port_label, 2, 0, 1, 1)
+        self.port_entry = Gtk.Entry()
+        self.port_entry.set_width_chars(8)
+        grid.attach(self.port_entry, 3, 0, 1, 1)
+
+        self.verbose_check = Gtk.CheckButton(label="Verbose logging")
+        self.verbose_check.set_tooltip_text(
+            "Включать подробный лог уровня DEBUG. Полезно для диагностики, "
+            "но лог становится значительно шумнее."
+        )
+        grid.attach(self.verbose_check, 0, 1, 2, 1)
+
+        self.verify_tls_check = Gtk.CheckButton(label="Verify TLS")
+        self.verify_tls_check.set_tooltip_text(
+            "Проверять TLS-сертификат и имя хоста при WSS-подключении. "
+            "Безопаснее, но может ломать совместимость."
+        )
+        grid.attach(self.verify_tls_check, 2, 1, 2, 1)
+
+        verbose_hint = Gtk.Label(
+            label=(
+                "Verbose logging: включает подробный технический лог для отладки. "
+                "Для обычной работы обычно лучше держать выключенным."
+            ),
+            xalign=0,
+        )
+        verbose_hint.set_line_wrap(True)
+        verbose_hint.set_max_width_chars(80)
+        box.pack_start(verbose_hint, False, False, 0)
+
+        tls_hint = Gtk.Label(
+            label=(
+                "Verify TLS: включает строгую проверку сертификата и имени хоста для WSS. "
+                "Безопаснее, но иногда мешает подключению."
+            ),
+            xalign=0,
+        )
+        tls_hint.set_line_wrap(True)
+        tls_hint.set_max_width_chars(80)
+        box.pack_start(tls_hint, False, False, 0)
+
+        mappings_label = Gtk.Label(label="DC -> IP mappings", xalign=0)
+        box.pack_start(mappings_label, False, False, 0)
+
+        mappings_scroller = Gtk.ScrolledWindow()
+        mappings_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        mappings_scroller.set_shadow_type(Gtk.ShadowType.IN)
+        mappings_scroller.set_min_content_height(120)
+        box.pack_start(mappings_scroller, False, False, 0)
+
+        self.dc_view = Gtk.TextView()
+        self.dc_view.set_wrap_mode(Gtk.WrapMode.NONE)
+        self.dc_view.set_monospace(True)
+        self.dc_view.get_style_context().add_class("dc-mappings")
+        mappings_scroller.add(self.dc_view)
+        return box
+
+    def _build_mtproto_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+
+        info = Gtk.Label(
+            label=(
+                "Резервный внешний MTProto profile. Локальный proxy-процесс для него не запускается. "
+                "Кнопка Open Telegram откроет tg://proxy с параметрами этого профиля."
+            ),
+            xalign=0,
+        )
+        info.set_line_wrap(True)
+        box.pack_start(info, False, False, 0)
+
+        grid = Gtk.Grid(column_spacing=14, row_spacing=12)
+        box.pack_start(grid, False, False, 0)
+
+        server_label = Gtk.Label(label="Server", xalign=0)
+        grid.attach(server_label, 0, 0, 1, 1)
+        self.mtproto_server_entry = Gtk.Entry()
+        self.mtproto_server_entry.set_hexpand(True)
+        grid.attach(self.mtproto_server_entry, 1, 0, 1, 1)
+
+        port_label = Gtk.Label(label="Port", xalign=0)
+        grid.attach(port_label, 2, 0, 1, 1)
+        self.mtproto_port_entry = Gtk.Entry()
+        self.mtproto_port_entry.set_width_chars(8)
+        grid.attach(self.mtproto_port_entry, 3, 0, 1, 1)
+
+        secret_label = Gtk.Label(label="Secret", xalign=0)
+        grid.attach(secret_label, 0, 1, 1, 1)
+        self.mtproto_secret_entry = Gtk.Entry()
+        self.mtproto_secret_entry.set_visibility(False)
+        self.mtproto_secret_entry.set_invisible_char("*")
+        self.mtproto_secret_entry.set_hexpand(True)
+        grid.attach(self.mtproto_secret_entry, 1, 1, 3, 1)
+        return box
+
+    def _build_sidecar_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+
+        info = Gtk.Label(
+            label=(
+                "Профиль для будущего локального MTProxy sidecar. Схема уже заведена в конфиг, "
+                "но lifecycle sidecar пока ещё не реализован."
+            ),
+            xalign=0,
+        )
+        info.set_line_wrap(True)
+        box.pack_start(info, False, False, 0)
+
+        grid = Gtk.Grid(column_spacing=14, row_spacing=12)
+        box.pack_start(grid, False, False, 0)
+
+        host_label = Gtk.Label(label="Listen host", xalign=0)
+        grid.attach(host_label, 0, 0, 1, 1)
+        self.sidecar_host_entry = Gtk.Entry()
+        self.sidecar_host_entry.set_hexpand(True)
+        grid.attach(self.sidecar_host_entry, 1, 0, 1, 1)
+
+        port_label = Gtk.Label(label="Port", xalign=0)
+        grid.attach(port_label, 2, 0, 1, 1)
+        self.sidecar_port_entry = Gtk.Entry()
+        self.sidecar_port_entry.set_width_chars(8)
+        grid.attach(self.sidecar_port_entry, 3, 0, 1, 1)
+
+        secret_label = Gtk.Label(label="Secret", xalign=0)
+        grid.attach(secret_label, 0, 1, 1, 1)
+        self.sidecar_secret_entry = Gtk.Entry()
+        self.sidecar_secret_entry.set_visibility(False)
+        self.sidecar_secret_entry.set_invisible_char("*")
+        self.sidecar_secret_entry.set_hexpand(True)
+        grid.attach(self.sidecar_secret_entry, 1, 1, 3, 1)
+        return box
+
+    def _build_disabled_page(self) -> Gtk.Widget:
+        label = Gtk.Label(
+            label=(
+                "Этот профиль не запускает локальный proxy и не открывает proxy link в Telegram. "
+                "Его можно использовать как явный режим без proxy."
+            ),
+            xalign=0,
+        )
+        label.set_line_wrap(True)
+        return label
 
     def _show_message(
         self,
@@ -247,15 +388,33 @@ class ProxyWindow(Gtk.ApplicationWindow):
         mark = buffer.create_mark(None, buffer.get_end_iter(), False)
         self.log_view.scroll_mark_onscreen(mark)
 
-    def current_config(self) -> dict:
+    def _populate_profile_combo(self) -> None:
+        self._changing_profile = True
+        self.profile_combo.remove_all()
+        for profile in self.cfg.get("profiles", []):
+            self.profile_combo.append(profile["id"], tg_ws_proxy.profile_display_name(profile))
+        active_id = str(self.cfg.get("active_profile") or self.selected_profile_id)
+        self.profile_combo.set_active_id(active_id)
+        if not self.profile_combo.get_active_id() and self.cfg.get("profiles"):
+            fallback_id = self.cfg["profiles"][0]["id"]
+            self.profile_combo.set_active_id(fallback_id)
+            active_id = fallback_id
+        self.selected_profile_id = active_id
+        self._changing_profile = False
+
+    def _selected_profile(self) -> dict:
+        return tg_ws_proxy.get_profile(self.cfg, self.selected_profile_id)
+
+    def _coerce_port(self, text: str, field_name: str) -> int:
         try:
-            port = int(self.port_entry.get_text().strip())
+            port = int(text.strip())
         except ValueError as exc:
-            raise ValueError("Port must be an integer") from exc
-
+            raise ValueError(f"{field_name} must be an integer") from exc
         if not (1 <= port <= 65535):
-            raise ValueError("Port must be between 1 and 65535")
+            raise ValueError(f"{field_name} must be between 1 and 65535")
+        return port
 
+    def _wss_profile_from_widgets(self, profile: dict) -> dict:
         dc_buffer = self.dc_view.get_buffer()
         start = dc_buffer.get_start_iter()
         end = dc_buffer.get_end_iter()
@@ -266,34 +425,126 @@ class ProxyWindow(Gtk.ApplicationWindow):
         ]
         if not dc_lines:
             raise ValueError("At least one DC mapping is required")
-
         tg_ws_proxy.parse_dc_ip_list(dc_lines)
-
         return {
+            **profile,
+            "name": self.profile_name_entry.get_text().strip() or profile.get("name") or "Local WSS",
             "listen_host": self.host_entry.get_text().strip() or tg_ws_proxy.DEFAULT_HOST,
-            "port": port,
+            "port": self._coerce_port(self.port_entry.get_text(), "Port"),
             "dc_ip": dc_lines,
             "verbose": self.verbose_check.get_active(),
             "verify_tls": self.verify_tls_check.get_active(),
         }
 
-    def save_config(self) -> bool:
+    def _mtproto_profile_from_widgets(self, profile: dict) -> dict:
+        return {
+            **profile,
+            "name": self.profile_name_entry.get_text().strip() or profile.get("name") or "External MTProto",
+            "server": self.mtproto_server_entry.get_text().strip(),
+            "port": self._coerce_port(self.mtproto_port_entry.get_text(), "Port"),
+            "secret": self.mtproto_secret_entry.get_text().strip(),
+        }
+
+    def _sidecar_profile_from_widgets(self, profile: dict) -> dict:
+        return {
+            **profile,
+            "name": self.profile_name_entry.get_text().strip() or profile.get("name") or "Local MTProxy Sidecar",
+            "listen_host": self.sidecar_host_entry.get_text().strip() or tg_ws_proxy.DEFAULT_HOST,
+            "port": self._coerce_port(self.sidecar_port_entry.get_text(), "Port"),
+            "secret": self.sidecar_secret_entry.get_text().strip(),
+        }
+
+    def _disabled_profile_from_widgets(self, profile: dict) -> dict:
+        return {
+            **profile,
+            "name": self.profile_name_entry.get_text().strip() or profile.get("name") or "Disabled",
+        }
+
+    def _sync_selected_profile_to_cfg(self) -> bool:
+        profile = self._selected_profile()
+        profile_type = str(profile.get("type"))
         try:
-            cfg = self.current_config()
+            if profile_type == tg_ws_proxy.PROFILE_WSS_LOCAL:
+                updated = self._wss_profile_from_widgets(profile)
+            elif profile_type == tg_ws_proxy.PROFILE_MTPROTO_EXTERNAL:
+                updated = self._mtproto_profile_from_widgets(profile)
+            elif profile_type == tg_ws_proxy.PROFILE_MTPROTO_SIDECAR:
+                updated = self._sidecar_profile_from_widgets(profile)
+            else:
+                updated = self._disabled_profile_from_widgets(profile)
         except ValueError as exc:
             self._show_message(Gtk.MessageType.ERROR, "Invalid config", str(exc))
             return False
 
-        tg_ws_proxy.save_config(cfg, self.config_file)
-        self.cfg = cfg
+        for index, existing in enumerate(self.cfg.get("profiles", [])):
+            if existing.get("id") == updated.get("id"):
+                self.cfg["profiles"][index] = updated
+                break
+        self.cfg["active_profile"] = updated["id"]
+        return True
+
+    def save_config(self) -> bool:
+        if not self._sync_selected_profile_to_cfg():
+            return False
+
+        tg_ws_proxy.save_config(self.cfg, self.config_file)
+        self.cfg = tg_ws_proxy.load_config(self.config_file)
+        self._populate_profile_combo()
+        self._load_selected_profile_into_widgets()
         self._append_log_line(f"[gui] Config saved to {self.config_file}")
         self._refresh_status()
         return True
 
+    def _load_selected_profile_into_widgets(self) -> None:
+        profile = self._selected_profile()
+        profile_type = str(profile.get("type"))
+        self.profile_name_entry.set_text(str(profile.get("name") or ""))
+        type_labels = {
+            tg_ws_proxy.PROFILE_WSS_LOCAL: "Local WSS/SOCKS5",
+            tg_ws_proxy.PROFILE_MTPROTO_EXTERNAL: "External MTProto",
+            tg_ws_proxy.PROFILE_MTPROTO_SIDECAR: "Local MTProxy Sidecar",
+            tg_ws_proxy.PROFILE_DIRECT_DISABLED: "Disabled",
+        }
+        self.profile_type_label.set_text(type_labels.get(profile_type, profile_type))
+        self.profile_stack.set_visible_child_name(profile_type)
+
+        if profile_type == tg_ws_proxy.PROFILE_WSS_LOCAL:
+            self.host_entry.set_text(str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST))
+            self.port_entry.set_text(str(profile.get("port", tg_ws_proxy.DEFAULT_PORT)))
+            self.verbose_check.set_active(bool(profile.get("verbose", False)))
+            self.verify_tls_check.set_active(bool(profile.get("verify_tls", False)))
+            self.dc_view.get_buffer().set_text("\n".join(profile.get("dc_ip") or []))
+        elif profile_type == tg_ws_proxy.PROFILE_MTPROTO_EXTERNAL:
+            self.mtproto_server_entry.set_text(str(profile.get("server") or ""))
+            self.mtproto_port_entry.set_text(str(profile.get("port", 443)))
+            self.mtproto_secret_entry.set_text(str(profile.get("secret") or ""))
+        elif profile_type == tg_ws_proxy.PROFILE_MTPROTO_SIDECAR:
+            self.sidecar_host_entry.set_text(str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST))
+            self.sidecar_port_entry.set_text(str(profile.get("port", 11080)))
+            self.sidecar_secret_entry.set_text(str(profile.get("secret") or ""))
+
+    def _profile_endpoint_text(self, profile: dict) -> str:
+        profile_type = str(profile.get("type"))
+        if profile_type == tg_ws_proxy.PROFILE_WSS_LOCAL:
+            return f"SOCKS5 {profile.get('listen_host', tg_ws_proxy.DEFAULT_HOST)}:{profile.get('port', tg_ws_proxy.DEFAULT_PORT)}"
+        if profile_type == tg_ws_proxy.PROFILE_MTPROTO_EXTERNAL:
+            server = str(profile.get("server") or "<empty>")
+            return f"MTProto {server}:{profile.get('port', 443)}"
+        if profile_type == tg_ws_proxy.PROFILE_MTPROTO_SIDECAR:
+            return f"Sidecar {profile.get('listen_host', tg_ws_proxy.DEFAULT_HOST)}:{profile.get('port', 11080)}"
+        return "No local proxy endpoint"
+
     def _spawn_proxy(self) -> subprocess.Popen[str]:
         script = Path(__file__).with_name("run_proxy.sh")
         return subprocess.Popen(
-            [str(script), "run", "--config", str(self.config_file)],
+            [
+                str(script),
+                "run",
+                "--config",
+                str(self.config_file),
+                "--profile",
+                self.selected_profile_id,
+            ],
             cwd=str(Path(__file__).resolve().parent),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -301,12 +552,14 @@ class ProxyWindow(Gtk.ApplicationWindow):
         )
 
     def _auto_start(self) -> bool:
-        try:
-            cfg = self.current_config()
-        except ValueError:
-            cfg = self.cfg
+        profile = self._selected_profile()
+        if str(profile.get("type")) != tg_ws_proxy.PROFILE_WSS_LOCAL:
+            self._refresh_status()
+            return False
 
-        if self._is_listening(cfg["listen_host"], cfg["port"]):
+        host = str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST)
+        port = int(profile.get("port", tg_ws_proxy.DEFAULT_PORT))
+        if self._is_listening(host, port):
             self._refresh_status()
             return False
 
@@ -315,7 +568,36 @@ class ProxyWindow(Gtk.ApplicationWindow):
             GLib.timeout_add(700, self._refresh_status_once)
         return False
 
+    def _on_profile_changed(self, _: Gtk.ComboBoxText) -> None:
+        if self._changing_profile:
+            return
+
+        new_id = self.profile_combo.get_active_id()
+        if not new_id or new_id == self.selected_profile_id:
+            return
+
+        old_id = self.selected_profile_id
+        if not self._sync_selected_profile_to_cfg():
+            self._changing_profile = True
+            self.profile_combo.set_active_id(old_id)
+            self._changing_profile = False
+            return
+
+        self.selected_profile_id = new_id
+        self.cfg["active_profile"] = new_id
+        self._load_selected_profile_into_widgets()
+        self._refresh_status()
+
     def _on_start(self, _: Gtk.Button) -> None:
+        profile = self._selected_profile()
+        if str(profile.get("type")) != tg_ws_proxy.PROFILE_WSS_LOCAL:
+            self._show_message(
+                Gtk.MessageType.INFO,
+                "No local runner",
+                "Текущий профиль не запускает локальный WSS proxy. Для него используйте Open Telegram.",
+            )
+            return
+
         if self.proc and self.proc.poll() is None:
             self._refresh_status()
             return
@@ -323,11 +605,14 @@ class ProxyWindow(Gtk.ApplicationWindow):
         if not self.save_config():
             return
 
-        if self._is_listening(self.cfg["listen_host"], self.cfg["port"]):
+        profile = self._selected_profile()
+        host = str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST)
+        port = int(profile.get("port", tg_ws_proxy.DEFAULT_PORT))
+        if self._is_listening(host, port):
             self._show_message(
                 Gtk.MessageType.INFO,
                 "Already running",
-                f"Proxy already listens on {self.cfg['listen_host']}:{self.cfg['port']}",
+                f"Proxy already listens on {host}:{port}",
             )
             self._refresh_status()
             return
@@ -352,8 +637,26 @@ class ProxyWindow(Gtk.ApplicationWindow):
     def _on_open_telegram(self, _: Gtk.Button) -> None:
         if not self.save_config():
             return
-        url = tg_ws_proxy.open_in_telegram(self.cfg["port"], self.cfg["listen_host"])
+        try:
+            url = tg_ws_proxy.open_in_telegram(profile=self._selected_profile())
+        except ValueError as exc:
+            self._show_message(Gtk.MessageType.ERROR, "Open Telegram failed", str(exc))
+            return
         self._append_log_line(f"[gui] Opened {url}")
+
+    def _on_copy_link(self, _: Gtk.Button) -> None:
+        if not self.save_config():
+            return
+        try:
+            url = tg_ws_proxy.validate_profile_telegram_target(self._selected_profile())
+        except ValueError as exc:
+            self._show_message(Gtk.MessageType.ERROR, "Copy link failed", str(exc))
+            return
+
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        clipboard.set_text(url, -1)
+        clipboard.store()
+        self._append_log_line(f"[gui] Copied {url}")
 
     def _on_open_log(self, _: Gtk.Button) -> None:
         try:
@@ -369,29 +672,48 @@ class ProxyWindow(Gtk.ApplicationWindow):
         return False
 
     def _refresh_status(self) -> None:
-        try:
-            cfg = self.current_config()
-        except ValueError:
-            cfg = self.cfg
-
         if self.proc and self.proc.poll() is not None:
             self.proc = None
 
-        listening = self._is_listening(cfg["listen_host"], int(cfg["port"]))
+        profile = self._selected_profile()
+        profile_type = str(profile.get("type"))
         owned = bool(self.proc and self.proc.poll() is None)
 
-        if listening and owned:
-            self.status_label.set_markup("<b>Running from GUI</b>")
-        elif listening:
-            self.status_label.set_markup("<b>Running externally</b>")
+        if profile_type == tg_ws_proxy.PROFILE_WSS_LOCAL:
+            host = str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST)
+            port = int(profile.get("port", tg_ws_proxy.DEFAULT_PORT))
+            listening = self._is_listening(host, port)
+            if listening and owned:
+                self.status_label.set_markup("<b>Running from GUI</b>")
+            elif listening:
+                self.status_label.set_markup("<b>Running externally</b>")
+            else:
+                self.status_label.set_markup("<b>Stopped</b>")
+            self.start_button.set_sensitive(not listening)
+            self.stop_button.set_sensitive(owned)
+        elif profile_type == tg_ws_proxy.PROFILE_MTPROTO_EXTERNAL:
+            self.status_label.set_markup("<b>External MTProto profile</b>")
+            self.start_button.set_sensitive(False)
+            self.stop_button.set_sensitive(False)
+        elif profile_type == tg_ws_proxy.PROFILE_MTPROTO_SIDECAR:
+            host = str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST)
+            port = int(profile.get("port", 11080))
+            if self._is_listening(host, port):
+                self.status_label.set_markup("<b>Sidecar endpoint detected</b>")
+            else:
+                self.status_label.set_markup("<b>Sidecar profile</b>")
+            self.start_button.set_sensitive(False)
+            self.stop_button.set_sensitive(False)
         else:
-            self.status_label.set_markup("<b>Stopped</b>")
+            self.status_label.set_markup("<b>Disabled profile</b>")
+            self.start_button.set_sensitive(False)
+            self.stop_button.set_sensitive(False)
 
         self.endpoint_label.set_text(
-            f"Endpoint: {cfg['listen_host']}:{cfg['port']}    Config: {self.config_file}"
+            f"Profile: {tg_ws_proxy.profile_display_name(profile)}    "
+            f"Endpoint: {self._profile_endpoint_text(profile)}    "
+            f"Config: {self.config_file}"
         )
-        self.start_button.set_sensitive(not listening)
-        self.stop_button.set_sensitive(owned)
 
     def _poll_log(self) -> None:
         path = tg_ws_proxy.log_path()

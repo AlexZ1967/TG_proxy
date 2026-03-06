@@ -2,7 +2,7 @@
 
 ## Goal
 
-Опубликовать Linux-версию `tg-ws-proxy` в GitHub и довести проект до рабочего состояния для Telegram Desktop на Linux.
+Опубликовать Linux-версию `tg-ws-proxy` в GitHub, довести проект до рабочего состояния для Telegram Desktop на Linux и подготовить следующий этап устойчивости к блокировкам.
 
 ## Environment
 
@@ -20,7 +20,8 @@
 - `done`: первичная публикация в GitHub
 - `done`: portable-запуск подтверждён на Linux Mint
 - `done`: работа с Telegram Desktop подтверждена на живом трафике
-- `in_progress`: desktop-интеграция и упаковка под Linux Mint
+- `done`: desktop-интеграция и упаковка под Linux Mint
+- `in_progress`: подготовка resilience roadmap для следующего минорного цикла
 
 ## Work Plan
 
@@ -49,9 +50,13 @@
    Результат: решение по TLS verification, дополнительным DC mapping, логированию, обработке ошибок и portable packaging.
 
 7. Добавить desktop-интеграцию для Linux Mint.
-   Статус: `in_progress`
+   Статус: `done`
    Результат: `.desktop` launcher для GTK GUI и краткая инструкция по установке в пользовательское меню.
+
+8. Спроектировать следующий этап устойчивости к блокировкам.
+   Статус: `in_progress`
+   Результат: зафиксированный backlog по backup transport, профилям переключения, диагностике DNS/IPv4/IPv6 и интеграции с MTProxy без самописной реализации MTProto с нуля.
 
 ## Immediate Next Step
 
-Добавить `.desktop` launcher для GTK GUI и завершить desktop-интеграцию под Linux Mint.
+Зафиксировать и реализовать первый этап resilience roadmap: профили переключения и backup через внешний или sidecar MTProxy.

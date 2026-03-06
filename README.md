@@ -97,6 +97,9 @@ python3 -m venv .venv
 
 `~/.local/state/tg-ws-proxy/proxy.log`
 
+По умолчанию WS-bridge включён для `DC2` и `DC4`.
+Остальные известные DC при необходимости уходят в обычный TCP fallback.
+
 ## systemd --user
 
 Unit теперь использует переносимый launcher [`run_proxy.sh`](run_proxy.sh).

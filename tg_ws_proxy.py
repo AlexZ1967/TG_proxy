@@ -596,6 +596,9 @@ class ProxyServer:
         _stats.connections_total += 1
         peer = writer.get_extra_info("peername")
         label = f"{peer[0]}:{peer[1]}" if peer else "?"
+        dst = "?"
+        port = 0
+        stage = "socks5 greeting"
 
         try:
             greeting = await asyncio.wait_for(reader.readexactly(2), timeout=10)
@@ -603,10 +606,12 @@ class ProxyServer:
                 writer.close()
                 return
 
+            stage = "socks5 methods"
             await reader.readexactly(greeting[1])
             writer.write(b"\x05\x00")
             await writer.drain()
 
+            stage = "socks5 request"
             request = await asyncio.wait_for(reader.readexactly(4), timeout=10)
             _, cmd, _, atyp = request
             if cmd != 1:
@@ -632,10 +637,37 @@ class ProxyServer:
 
             if not _is_telegram_ip(dst):
                 _stats.connections_passthrough += 1
-                remote_reader, remote_writer = await asyncio.wait_for(
-                    asyncio.open_connection(dst, port),
-                    timeout=10,
-                )
+                stage = "passthrough connect"
+                try:
+                    remote_reader, remote_writer = await asyncio.wait_for(
+                        asyncio.open_connection(dst, port),
+                        timeout=10,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning("[%s] passthrough connect to %s:%d timed out", label, dst, port)
+                    writer.write(_socks5_reply(0x05))
+                    await writer.drain()
+                    return
+                except OSError as exc:
+                    if ":" in dst and exc.errno == 101:
+                        log.debug(
+                            "[%s] passthrough IPv6 connect to %s:%d failed: %s",
+                            label,
+                            dst,
+                            port,
+                            exc,
+                        )
+                    else:
+                        log.warning(
+                            "[%s] passthrough connect to %s:%d failed: %s",
+                            label,
+                            dst,
+                            port,
+                            exc,
+                        )
+                    writer.write(_socks5_reply(0x05))
+                    await writer.drain()
+                    return
                 writer.write(_socks5_reply(0x00))
                 await writer.drain()
                 tasks = [
@@ -648,6 +680,7 @@ class ProxyServer:
             writer.write(_socks5_reply(0x00))
             await writer.drain()
 
+            stage = "mtproto init"
             init = await asyncio.wait_for(reader.readexactly(64), timeout=15)
             if _is_http_transport(init):
                 _stats.connections_http_rejected += 1
@@ -658,8 +691,13 @@ class ProxyServer:
             if dc is None:
                 dc = _IP_TO_DC.get(dst)
 
-            if dc is None or dc not in self.dc_opt:
+            if dc is None:
                 log.warning("[%s] unknown DC for %s:%d -> TCP fallback", label, dst, port)
+                await _tcp_fallback(reader, writer, dst, port, init, label)
+                return
+
+            if dc not in self.dc_opt:
+                log.info("[%s] DC%d not configured for WS -> TCP fallback to %s:%d", label, dc, dst, port)
                 await _tcp_fallback(reader, writer, dst, port, init, label)
                 return
 
@@ -675,6 +713,7 @@ class ProxyServer:
             target_ip = self.dc_opt[dc]
 
             for domain in _ws_domains(dc, is_media):
+                stage = f"ws connect {domain}"
                 log.info(
                     "[%s] DC%d%s (%s:%d) -> wss://%s/apiws via %s",
                     label,
@@ -703,6 +742,7 @@ class ProxyServer:
                     log.warning("[%s] DC%d WS connect failed: %s", label, dc, exc)
 
             if ws is None:
+                stage = "tcp fallback"
                 if ws_failed_redirect and all_redirects:
                     _ws_blacklist.add(dc_key)
                 else:
@@ -712,14 +752,41 @@ class ProxyServer:
 
             _dc_fail_until.pop(dc_key, None)
             _stats.connections_ws += 1
+            stage = "ws bridge"
             await ws.send(init)
             await _bridge_ws(reader, writer, ws, label, dc, dst, port, is_media)
         except asyncio.IncompleteReadError:
             log.debug("[%s] client disconnected", label)
         except asyncio.TimeoutError:
-            log.warning("[%s] timeout during SOCKS5 handshake", label)
+            log.warning("[%s] timeout during %s for %s:%s", label, stage, dst, port or "?")
+        except OSError as exc:
+            if exc.errno == 101:
+                log.warning(
+                    "[%s] network unreachable during %s for %s:%s: %s",
+                    label,
+                    stage,
+                    dst,
+                    port or "?",
+                    exc,
+                )
+            else:
+                log.error(
+                    "[%s] OS error during %s for %s:%s: %s",
+                    label,
+                    stage,
+                    dst,
+                    port or "?",
+                    exc,
+                )
         except Exception as exc:
-            log.error("[%s] unexpected error: %s", label, exc)
+            log.error(
+                "[%s] unexpected error during %s for %s:%s: %s",
+                label,
+                stage,
+                dst,
+                port or "?",
+                exc,
+            )
         finally:
             writer.close()
             try:

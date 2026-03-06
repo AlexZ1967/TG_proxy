@@ -13,7 +13,7 @@ Telegram Desktop -> SOCKS5 127.0.0.1:1080 -> tg-ws-proxy -> WSS -> Telegram DC
 - с XDG-конфигом;
 - с `systemd --user` unit;
 - с helper-командой для `tg://socks`;
-- с лёгким GUI на `tkinter`.
+- с лёгким GUI на GTK3.
 
 Документация проекта:
 - план работ: [`PLAN.md`](PLAN.md)
@@ -23,7 +23,7 @@ Telegram Desktop -> SOCKS5 127.0.0.1:1080 -> tg-ws-proxy -> WSS -> Telegram DC
 - `Linux Mint 22.3 (Zena)`
 - Python `3.10+`
 - переносимый запуск через shell launcher'ы
-- Текущая версия разработки: `0.2.0`
+- Текущая версия разработки: `0.3.0`
 
 ## Установка
 
@@ -33,6 +33,8 @@ python3 -m venv .venv
 ```
 
 Если вы не хотите использовать `venv`, можно запускать и через системный `python3`, если в нём уже установлена `cryptography`.
+
+Для GUI нужен `PyGObject` (`python3-gi`). На Linux Mint он обычно уже есть в системном Python.
 
 ## Быстрый старт
 
@@ -144,4 +146,5 @@ journalctl --user -u tg-ws-proxy.service -f
 - Проверка TLS по умолчанию отключена для совместимости с исходной реализацией. Для более строгого режима запускайте с `--verify-tls`.
 - Локальный listen host по умолчанию `127.0.0.1`, чтобы не открыть SOCKS5 наружу.
 - GUI сделан на `tkinter`, чтобы не тащить тяжёлые desktop-зависимости.
+- GUI сделан на GTK3 (`PyGObject`), чтобы использовать нативные системные шрифты и виджеты Linux Mint.
 - `conda` можно использовать, но проект больше не привязан к нему.

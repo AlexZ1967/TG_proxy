@@ -12,7 +12,8 @@ Telegram Desktop -> SOCKS5 127.0.0.1:1080 -> tg-ws-proxy -> WSS -> Telegram DC
 - без Windows tray;
 - с XDG-конфигом;
 - с `systemd --user` unit;
-- с helper-командой для `tg://socks`.
+- с helper-командой для `tg://socks`;
+- с лёгким GUI на `tkinter`.
 
 Документация проекта:
 - план работ: [`PLAN.md`](PLAN.md)
@@ -20,41 +21,49 @@ Telegram Desktop -> SOCKS5 127.0.0.1:1080 -> tg-ws-proxy -> WSS -> Telegram DC
 
 Целевая среда проекта:
 - `Linux Mint 22.3 (Zena)`
-- `conda` env `p313`
-- Python из `p313`: `/home/alex/miniconda3/envs/p313/bin/python`
+- Python `3.10+`
+- переносимый запуск через shell launcher'ы
 - Текущая версия разработки: `0.2.0`
 
 ## Установка
 
 ```bash
-conda activate p313
-pip install -r requirements.txt
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
 ```
+
+Если вы не хотите использовать `venv`, можно запускать и через системный `python3`, если в нём уже установлена `cryptography`.
 
 ## Быстрый старт
 
 Создать конфиг:
 
 ```bash
-conda run -n p313 python tg_ws_proxy.py init-config
+./run_proxy.sh init-config
 ```
 
 Узнать пути:
 
 ```bash
-conda run -n p313 python tg_ws_proxy.py paths
+./run_proxy.sh paths
 ```
 
 Запустить прокси:
 
 ```bash
-conda run -n p313 python tg_ws_proxy.py run
+./run_proxy.sh run
+```
+
+Запустить лёгкий GUI:
+
+```bash
+./run_gui.sh
 ```
 
 Открыть настройку прокси в Telegram Desktop:
 
 ```bash
-conda run -n p313 python tg_ws_proxy.py open-in-telegram
+./run_proxy.sh open-in-telegram
 ```
 
 Если `tg://` handler не сработал, настройте Telegram Desktop вручную:
@@ -90,9 +99,12 @@ conda run -n p313 python tg_ws_proxy.py open-in-telegram
 
 ## systemd --user
 
-Unit уже настроен под интерпретатор:
-
-`/home/alex/miniconda3/envs/p313/bin/python`
+Unit теперь использует переносимый launcher [`run_proxy.sh`](run_proxy.sh).
+Порядок выбора интерпретатора такой:
+- `$TG_PROXY_PYTHON`, если переменная задана
+- `./.venv/bin/python`, если локальное `venv` создано
+- системный `python3`
+- системный `python`
 
 Скопировать unit:
 
@@ -101,6 +113,19 @@ mkdir -p ~/.config/systemd/user
 cp systemd/tg-ws-proxy.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now tg-ws-proxy.service
+```
+
+Если нужен конкретный Python, можно перед запуском сервиса задать:
+
+```bash
+systemctl --user edit tg-ws-proxy.service
+```
+
+И добавить:
+
+```ini
+[Service]
+Environment=TG_PROXY_PYTHON=/path/to/python
 ```
 
 Проверить статус:
@@ -115,4 +140,5 @@ journalctl --user -u tg-ws-proxy.service -f
 - Базовая установка Linux-версии требует только `cryptography`.
 - Проверка TLS по умолчанию отключена для совместимости с исходной реализацией. Для более строгого режима запускайте с `--verify-tls`.
 - Локальный listen host по умолчанию `127.0.0.1`, чтобы не открыть SOCKS5 наружу.
-- Для всех проверок и запуска по умолчанию используется `conda` env `p313`.
+- GUI сделан на `tkinter`, чтобы не тащить тяжёлые desktop-зависимости.
+- `conda` можно использовать, но проект больше не привязан к нему.

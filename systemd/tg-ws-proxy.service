@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/Telegram/tg_proxy
-ExecStart=/home/alex/miniconda3/envs/p313/bin/python %h/Telegram/tg_proxy/tg_ws_proxy.py run
+ExecStart=%h/Telegram/tg_proxy/run_proxy.sh run
 Restart=on-failure
 RestartSec=2
 

@@ -9,8 +9,9 @@
 - ОС: `Linux Mint 22.3 (Zena)`
 - База: `Ubuntu noble`
 - Архитектура: `x86_64`
-- Основное окружение разработки и запуска: `conda` env `p313`
-- Python для сервиса: `/home/alex/miniconda3/envs/p313/bin/python`
+- Целевой runtime: переносимый запуск без привязки к `conda`
+- Поддерживаемый Python: `3.10+`
+- Допустимые варианты интерпретатора: локальный `.venv`, системный `python3`, или явно заданный `TG_PROXY_PYTHON`
 
 ## Status
 
@@ -31,11 +32,11 @@
 
 3. Проверить установку и запуск на Linux.
    Статус: `pending`
-   Результат: подтвержденный запуск в `conda` env `p313`, проверка `tg://socks` и ручной настройки Telegram Desktop.
+   Результат: подтвержденный portable-запуск через launcher, проверка `tg://socks` и ручной настройки Telegram Desktop.
 
 4. Подготовить автозапуск через `systemd --user`.
    Статус: `pending`
-   Результат: установленный unit с привязкой к интерпретатору из `conda` env `p313` и проверка через `systemctl --user status`.
+   Результат: установленный unit через portable launcher и проверка через `systemctl --user status`.
 
 5. Проверить работу с реальным Telegram Desktop.
    Статус: `pending`
@@ -43,7 +44,7 @@
 
 6. Ужесточить и стабилизировать проект.
    Статус: `pending`
-   Результат: решение по TLS verification, дополнительным DC mapping, логированию и обработке ошибок.
+   Результат: решение по TLS verification, дополнительным DC mapping, логированию, обработке ошибок и portable packaging.
 
 ## Immediate Next Step
 

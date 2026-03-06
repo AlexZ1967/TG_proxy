@@ -13,3 +13,4 @@ dependencies = [
 
 [project.scripts]
 tg-ws-proxy = "tg_ws_proxy:main"
+tg-ws-proxy-gui = "tg_ws_gui:main"

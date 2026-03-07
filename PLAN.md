@@ -68,9 +68,13 @@
    Результат: валидация `server:port`, `tg://proxy` export/open, `Copy Link`, GUI self-check и CLI `check-profile`.
 
 11. Вынести единые диагностические статусы в GUI и CLI.
-   Статус: `in_progress`
+   Статус: `done`
    Результат: статусы `WSS OK`, `DNS issue`, `TCP fallback only`, `IPv6 unavailable`, `MTProxy unavailable` и одинаковая подача деталей маршрута.
+
+12. Уточнить диагностику по живому трафику и сетевым семействам.
+   Статус: `done`
+   Результат: self-check показывает IPv4 probe, IPv6 probe и учитывает недавние события `WS`/`TCP fallback` из `proxy.log`.
 
 ## Immediate Next Step
 
-Расширить `M4 Diagnostics`: добавить явную проверку IPv4 и разделение `TCP fallback only` против `WSS OK` по живому трафику, а не только по probe.
+Перейти к следующему блоку roadmap: либо `M5 Network Hardening`, либо `M3 Local MTProxy Sidecar`, в зависимости от того, что важнее раньше для реального использования.

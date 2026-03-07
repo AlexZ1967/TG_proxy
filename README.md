@@ -80,6 +80,12 @@ python3 -m venv .venv
 - `IPv6 unavailable`
 - `MTProxy unavailable`
 
+В деталях self-check теперь показывает:
+- локальный endpoint слушает порт или нет;
+- IPv4 probe до upstream target;
+- IPv6 probe для Telegram IPv6 endpoint;
+- недавний live-traffic срез из `proxy.log` (`ws_events` и `tcp_fallback_events`).
+
 Открыть настройку прокси в Telegram Desktop:
 
 ```bash

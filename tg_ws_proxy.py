@@ -52,6 +52,18 @@ class ProfileDiagnosis:
     details: list[str]
 
 
+def _read_recent_log_lines(limit: int = 300) -> list[str]:
+    path = log_path()
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return []
+    return [line.rstrip("\n") for line in lines[-limit:]]
+
+
 def make_default_profiles() -> list[dict[str, Any]]:
     return [
         {
@@ -312,6 +324,33 @@ def _probe_ipv6_telegram(timeout: float) -> tuple[bool, str]:
     return False, last_error
 
 
+def _probe_ipv4_target(ip: str, port: int, timeout: float) -> tuple[bool, str]:
+    try:
+        with _socket.create_connection((ip, port), timeout=timeout):
+            return True, f"IPv4 probe reachable via {ip}:{port}"
+    except OSError as exc:
+        return False, f"{ip}:{port} -> {exc}"
+
+
+def _recent_live_traffic_status() -> tuple[Optional[str], list[str]]:
+    lines = _read_recent_log_lines()
+    if not lines:
+        return None, ["no recent log lines"]
+
+    ws_lines = [line for line in lines if " -> wss://" in line or "WS session closed" in line]
+    tcp_fb_lines = [line for line in lines if "TCP fallback" in line]
+
+    details = [
+        f"recent log window: ws_events={len(ws_lines)} tcp_fallback_events={len(tcp_fb_lines)}"
+    ]
+
+    if ws_lines:
+        return DIAG_WSS_OK, details
+    if tcp_fb_lines:
+        return DIAG_TCP_FALLBACK_ONLY, details
+    return None, details
+
+
 def _diagnose_wss_profile(profile: dict[str, Any], timeout: float) -> ProfileDiagnosis:
     name = str(profile.get("name") or profile.get("id") or "profile")
     runtime_cfg = runtime_config_from_profile(profile)
@@ -337,6 +376,11 @@ def _diagnose_wss_profile(profile: dict[str, Any], timeout: float) -> ProfileDia
     domain = _ws_domains(dc, False)[0]
     details.append(f"test route DC{dc} -> {domain} via {target_ip}")
 
+    ipv4_ok, ipv4_note = _probe_ipv4_target(target_ip, 443, timeout)
+    details.append(ipv4_note if ipv4_ok else f"IPv4 probe failed: {ipv4_note}")
+    live_status, live_details = _recent_live_traffic_status()
+    details.extend(live_details)
+
     async def _probe_ws() -> None:
         ws = await RawWebSocket.connect(
             target_ip,
@@ -352,6 +396,13 @@ def _diagnose_wss_profile(profile: dict[str, Any], timeout: float) -> ProfileDia
         ipv6_ok, ipv6_note = _probe_ipv6_telegram(timeout)
         details.append(ipv6_note if ipv6_ok else f"IPv6 probe failed: {ipv6_note}")
         details.append(f"WSS probe failed: {exc}")
+        if live_status == DIAG_WSS_OK:
+            return ProfileDiagnosis(
+                ok=True,
+                status=DIAG_WSS_OK,
+                summary=f"{name}: recent live traffic used WSS, although the current probe failed",
+                details=details,
+            )
         return ProfileDiagnosis(
             ok=False,
             status=DIAG_TCP_FALLBACK_ONLY,
@@ -361,6 +412,13 @@ def _diagnose_wss_profile(profile: dict[str, Any], timeout: float) -> ProfileDia
 
     ipv6_ok, ipv6_note = _probe_ipv6_telegram(timeout)
     details.append(ipv6_note if ipv6_ok else f"IPv6 probe failed: {ipv6_note}")
+    if live_status == DIAG_TCP_FALLBACK_ONLY:
+        return ProfileDiagnosis(
+            ok=False,
+            status=DIAG_TCP_FALLBACK_ONLY,
+            summary=f"{name}: recent live traffic shows only TCP fallback despite successful WSS probe",
+            details=details,
+        )
     return ProfileDiagnosis(
         ok=True,
         status=DIAG_WSS_OK,
@@ -402,6 +460,15 @@ def _diagnose_mtproto_profile(profile: dict[str, Any], timeout: float) -> Profil
     if _socket.AF_INET6 in families:
         resolved.append("IPv6")
     details.append("resolved families: " + (", ".join(resolved) if resolved else "unknown"))
+
+    ipv4_note = None
+    for family, _, _, _, sockaddr in addrinfo:
+        if family == _socket.AF_INET:
+            ok, note = _probe_ipv4_target(sockaddr[0], sockaddr[1], timeout)
+            ipv4_note = note if ok else f"IPv4 probe failed: {note}"
+            break
+    if ipv4_note:
+        details.append(ipv4_note)
 
     last_error = "no address attempted"
     for family, socktype, proto, _, sockaddr in addrinfo:

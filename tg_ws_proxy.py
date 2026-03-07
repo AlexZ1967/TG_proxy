@@ -8,12 +8,15 @@ from dataclasses import dataclass
 import json
 import logging
 import os
+import shutil
 import socket as _socket
+import secrets
 import ssl
 import struct
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlencode
@@ -29,6 +32,9 @@ PROFILE_MTPROTO_EXTERNAL = "mtproto_external"
 PROFILE_MTPROTO_SIDECAR = "mtproto_sidecar"
 PROFILE_DIRECT_DISABLED = "direct_disabled"
 DEFAULT_WSS_PROFILE_ID = "wss-local"
+ADDRESS_AUTO = "auto"
+ADDRESS_PREFER_IPV4 = "prefer_ipv4"
+ADDRESS_PREFER_IPV6 = "prefer_ipv6"
 
 DIAG_WSS_OK = "WSS OK"
 DIAG_MTPROXY_OK = "MTProxy OK"
@@ -75,6 +81,7 @@ def make_default_profiles() -> list[dict[str, Any]]:
             "dc_ip": ["2:149.154.167.220", "4:149.154.167.220"],
             "verbose": False,
             "verify_tls": False,
+            "address_family": ADDRESS_AUTO,
         },
         {
             "id": "mtproto-external",
@@ -83,6 +90,8 @@ def make_default_profiles() -> list[dict[str, Any]]:
             "server": "",
             "port": 443,
             "secret": "",
+            "address_family": ADDRESS_AUTO,
+            "diagnostic_dns_override": "",
         },
         {
             "id": "mtproto-sidecar",
@@ -91,6 +100,15 @@ def make_default_profiles() -> list[dict[str, Any]]:
             "listen_host": DEFAULT_HOST,
             "port": 11080,
             "secret": "",
+            "stats_port": 11081,
+            "workers": 1,
+            "proxy_tag": "",
+            "mode": "auto",
+            "binary_path": "",
+            "container_runtime": "",
+            "container_image": "",
+            "address_family": ADDRESS_AUTO,
+            "diagnostic_dns_override": "",
         },
         {
             "id": "direct-disabled",
@@ -140,6 +158,57 @@ def ensure_dirs() -> None:
     state_dir().mkdir(parents=True, exist_ok=True)
 
 
+def _safe_profile_token(profile: dict[str, Any]) -> str:
+    token = str(profile.get("id") or profile.get("name") or "profile").strip().lower()
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in token)
+    return safe or "profile"
+
+
+def sidecar_dir(profile: dict[str, Any]) -> Path:
+    return state_dir() / "sidecar" / _safe_profile_token(profile)
+
+
+def sidecar_pid_path(profile: dict[str, Any]) -> Path:
+    return sidecar_dir(profile) / "mtproxy.pid"
+
+
+def sidecar_state_path(profile: dict[str, Any]) -> Path:
+    return sidecar_dir(profile) / "sidecar-state.json"
+
+
+def sidecar_log_path(profile: dict[str, Any]) -> Path:
+    return sidecar_dir(profile) / "mtproxy.log"
+
+
+def sidecar_secret_path(profile: dict[str, Any]) -> Path:
+    return sidecar_dir(profile) / "proxy-secret"
+
+
+def sidecar_config_path(profile: dict[str, Any]) -> Path:
+    return sidecar_dir(profile) / "proxy-multi.conf"
+
+
+def sidecar_files(profile: dict[str, Any]) -> dict[str, Path]:
+    return {
+        "dir": sidecar_dir(profile),
+        "pid": sidecar_pid_path(profile),
+        "state": sidecar_state_path(profile),
+        "log": sidecar_log_path(profile),
+        "proxy_secret": sidecar_secret_path(profile),
+        "proxy_multi_conf": sidecar_config_path(profile),
+    }
+
+
+def generate_mtproto_secret() -> str:
+    return secrets.token_hex(16)
+
+
+def _normalize_address_family(value: Optional[str]) -> str:
+    if value in {ADDRESS_AUTO, ADDRESS_PREFER_IPV4, ADDRESS_PREFER_IPV6}:
+        return str(value)
+    return ADDRESS_AUTO
+
+
 def _profile_defaults(profile_type: str, profile_id: str, name: Optional[str] = None) -> dict[str, Any]:
     if profile_type == PROFILE_WSS_LOCAL:
         return {
@@ -151,6 +220,7 @@ def _profile_defaults(profile_type: str, profile_id: str, name: Optional[str] = 
             "dc_ip": ["2:149.154.167.220", "4:149.154.167.220"],
             "verbose": False,
             "verify_tls": False,
+            "address_family": ADDRESS_AUTO,
         }
     if profile_type == PROFILE_MTPROTO_EXTERNAL:
         return {
@@ -160,6 +230,8 @@ def _profile_defaults(profile_type: str, profile_id: str, name: Optional[str] = 
             "server": "",
             "port": 443,
             "secret": "",
+            "address_family": ADDRESS_AUTO,
+            "diagnostic_dns_override": "",
         }
     if profile_type == PROFILE_MTPROTO_SIDECAR:
         return {
@@ -169,6 +241,15 @@ def _profile_defaults(profile_type: str, profile_id: str, name: Optional[str] = 
             "listen_host": DEFAULT_HOST,
             "port": 11080,
             "secret": "",
+            "stats_port": 11081,
+            "workers": 1,
+            "proxy_tag": "",
+            "mode": "auto",
+            "binary_path": "",
+            "container_runtime": "",
+            "container_image": "",
+            "address_family": ADDRESS_AUTO,
+            "diagnostic_dns_override": "",
         }
     return {
         "id": profile_id,
@@ -194,6 +275,12 @@ def _normalize_profile(profile: dict[str, Any], index: int) -> dict[str, Any]:
     normalized["id"] = profile_id
     normalized["type"] = profile_type
     normalized["name"] = str(normalized.get("name") or defaults["name"])
+    if "address_family" in normalized:
+        normalized["address_family"] = _normalize_address_family(normalized.get("address_family"))
+    if profile_type == PROFILE_MTPROTO_SIDECAR:
+        normalized["stats_port"] = int(normalized.get("stats_port", 11081))
+        normalized["workers"] = int(normalized.get("workers", 1))
+        normalized["mode"] = str(normalized.get("mode") or "auto")
     return normalized
 
 
@@ -313,6 +400,396 @@ def validate_profile_telegram_target(profile: dict[str, Any]) -> str:
     return url
 
 
+def _preferred_families(address_family: str) -> list[int]:
+    normalized = _normalize_address_family(address_family)
+    if normalized == ADDRESS_PREFER_IPV4:
+        return [_socket.AF_INET, _socket.AF_INET6]
+    if normalized == ADDRESS_PREFER_IPV6:
+        return [_socket.AF_INET6, _socket.AF_INET]
+    return [_socket.AF_UNSPEC]
+
+
+def _connection_family(host: str, address_family: str) -> int:
+    try:
+        _socket.inet_pton(_socket.AF_INET6, host)
+        return _socket.AF_INET6
+    except OSError:
+        pass
+    try:
+        _socket.inet_pton(_socket.AF_INET, host)
+        return _socket.AF_INET
+    except OSError:
+        pass
+    normalized = _normalize_address_family(address_family)
+    if normalized == ADDRESS_PREFER_IPV4:
+        return _socket.AF_INET
+    if normalized == ADDRESS_PREFER_IPV6:
+        return _socket.AF_INET6
+    return _socket.AF_UNSPEC
+
+
+def _resolve_target(
+    host: str,
+    port: int,
+    address_family: str = ADDRESS_AUTO,
+    diagnostic_dns_override: str = "",
+) -> list[tuple[int, int, int, str, tuple]]:
+    query_host = diagnostic_dns_override.strip() or host
+    errors: list[str] = []
+    results: list[tuple[int, int, int, str, tuple]] = []
+    for family in _preferred_families(address_family):
+        try:
+            resolved = _socket.getaddrinfo(
+                query_host,
+                port,
+                family=family,
+                type=_socket.SOCK_STREAM,
+                proto=_socket.IPPROTO_TCP,
+            )
+        except OSError as exc:
+            errors.append(str(exc))
+            continue
+        for item in resolved:
+            if item not in results:
+                results.append(item)
+        if results and family != _socket.AF_UNSPEC:
+            break
+    if not results:
+        raise OSError("; ".join(errors) if errors else f"unable to resolve {query_host}:{port}")
+    return results
+
+
+def _download_to_file(url: str, path: Path) -> None:
+    with urllib.request.urlopen(url, timeout=20) as response:
+        data = response.read()
+    path.write_bytes(data)
+
+
+def prepare_sidecar_profile(profile: dict[str, Any], refresh: bool = False) -> dict[str, Any]:
+    if str(profile.get("type")) != PROFILE_MTPROTO_SIDECAR:
+        raise ValueError("Selected profile is not mtproto_sidecar")
+
+    files = sidecar_files(profile)
+    files["dir"].mkdir(parents=True, exist_ok=True)
+
+    if refresh or not files["proxy_secret"].exists():
+        _download_to_file("https://core.telegram.org/getProxySecret", files["proxy_secret"])
+    if refresh or not files["proxy_multi_conf"].exists():
+        _download_to_file("https://core.telegram.org/getProxyConfig", files["proxy_multi_conf"])
+
+    if not str(profile.get("secret") or "").strip():
+        profile["secret"] = generate_mtproto_secret()
+    return profile
+
+
+def _find_executable(explicit: str, candidates: list[str]) -> str:
+    if explicit:
+        explicit_path = Path(explicit).expanduser()
+        if explicit_path.exists():
+            return str(explicit_path)
+        raise ValueError(f"Configured executable not found: {explicit}")
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    raise ValueError(f"None of the executables are available: {', '.join(candidates)}")
+
+
+def _sidecar_runtime_mode(profile: dict[str, Any]) -> str:
+    mode = str(profile.get("mode") or "auto").strip().lower()
+    return mode if mode in {"auto", "binary", "container"} else "auto"
+
+
+def _load_sidecar_state(profile: dict[str, Any]) -> dict[str, Any]:
+    path = sidecar_state_path(profile)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_sidecar_state(profile: dict[str, Any], data: dict[str, Any]) -> None:
+    path = sidecar_state_path(profile)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _clear_sidecar_state(profile: dict[str, Any]) -> None:
+    for path in (sidecar_state_path(profile), sidecar_pid_path(profile)):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def sidecar_status(profile: dict[str, Any]) -> ProfileDiagnosis:
+    if str(profile.get("type")) != PROFILE_MTPROTO_SIDECAR:
+        raise ValueError("Selected profile is not mtproto_sidecar")
+
+    state = _load_sidecar_state(profile)
+    host = str(profile.get("listen_host") or DEFAULT_HOST)
+    port = int(profile.get("port", 11080))
+    details = [f"target {host}:{port}"]
+    files = sidecar_files(profile)
+
+    if state.get("mode") == "binary":
+        pid = int(state.get("pid", 0) or 0)
+        if pid and _pid_is_running(pid):
+            return ProfileDiagnosis(
+                ok=True,
+                status=DIAG_MTPROXY_OK,
+                summary=f"{profile.get('name', 'Sidecar')}: local MTProxy binary is running",
+                details=[*details, f"pid={pid}"],
+            )
+        _clear_sidecar_state(profile)
+        return ProfileDiagnosis(
+            ok=False,
+            status=DIAG_MTPROXY_UNAVAILABLE,
+            summary=f"{profile.get('name', 'Sidecar')}: sidecar binary is not running",
+            details=details,
+        )
+
+    if state.get("mode") == "container":
+        runtime = str(state.get("runtime") or "")
+        name = str(state.get("container_name") or "")
+        if runtime and name:
+            result = subprocess.run(
+                [runtime, "inspect", "-f", "{{.State.Running}}", name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip() == "true":
+                return ProfileDiagnosis(
+                    ok=True,
+                    status=DIAG_MTPROXY_OK,
+                    summary=f"{profile.get('name', 'Sidecar')}: sidecar container is running",
+                    details=[*details, f"container={name}", f"runtime={runtime}"],
+                )
+        _clear_sidecar_state(profile)
+        return ProfileDiagnosis(
+            ok=False,
+            status=DIAG_MTPROXY_UNAVAILABLE,
+            summary=f"{profile.get('name', 'Sidecar')}: sidecar container is not running",
+            details=details,
+        )
+
+    if files["proxy_secret"].exists() and files["proxy_multi_conf"].exists():
+        return ProfileDiagnosis(
+            ok=False,
+            status=DIAG_MTPROXY_UNAVAILABLE,
+            summary=f"{profile.get('name', 'Sidecar')}: sidecar is prepared but not started",
+            details=[*details, f"dir={files['dir']}"],
+        )
+
+    return ProfileDiagnosis(
+        ok=False,
+        status=DIAG_MTPROXY_UNAVAILABLE,
+        summary=f"{profile.get('name', 'Sidecar')}: sidecar is not prepared",
+        details=details,
+    )
+
+
+def _wait_for_local_port(host: str, port: int, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        family = _socket.AF_INET6 if ":" in host else _socket.AF_INET
+        with _socket.socket(family, _socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            try:
+                if sock.connect_ex((host, port)) == 0:
+                    return True
+            except OSError:
+                pass
+        time.sleep(0.2)
+    return False
+
+
+def start_sidecar_profile(profile: dict[str, Any]) -> ProfileDiagnosis:
+    profile = prepare_sidecar_profile(profile)
+    status = sidecar_status(profile)
+    if status.ok:
+        return status
+
+    files = sidecar_files(profile)
+    host = str(profile.get("listen_host") or DEFAULT_HOST)
+    port = int(profile.get("port", 11080))
+    stats_port = int(profile.get("stats_port", port + 1))
+    workers = max(1, int(profile.get("workers", 1)))
+    mode = _sidecar_runtime_mode(profile)
+    proxy_tag = str(profile.get("proxy_tag") or "").strip()
+
+    binary_cmd = [
+        "-p",
+        str(stats_port),
+        "-H",
+        str(port),
+        "-S",
+        str(profile["secret"]).strip(),
+        "--aes-pwd",
+        str(files["proxy_secret"]),
+        str(files["proxy_multi_conf"]),
+        "-M",
+        str(workers),
+    ]
+    if proxy_tag:
+        binary_cmd.extend(["-P", proxy_tag])
+
+    if mode in {"auto", "binary"}:
+        try:
+            binary = _find_executable(str(profile.get("binary_path") or ""), ["mtproto-proxy"])
+        except ValueError:
+            binary = ""
+        if binary:
+            with files["log"].open("a", encoding="utf-8") as log_handle:
+                proc = subprocess.Popen(
+                    [binary, *binary_cmd],
+                    cwd=str(files["dir"]),
+                    stdout=log_handle,
+                    stderr=log_handle,
+                    start_new_session=True,
+                )
+            files["pid"].write_text(str(proc.pid), encoding="utf-8")
+            _save_sidecar_state(profile, {"mode": "binary", "pid": proc.pid, "started_at": time.time()})
+            if _wait_for_local_port(host, port):
+                return sidecar_status(profile)
+            return ProfileDiagnosis(
+                ok=False,
+                status=DIAG_MTPROXY_UNAVAILABLE,
+                summary=f"{profile.get('name', 'Sidecar')}: binary started but {host}:{port} did not open in time",
+                details=[f"log={files['log']}"],
+            )
+
+    runtime = str(profile.get("container_runtime") or "").strip()
+    image = str(profile.get("container_image") or "").strip()
+    if mode in {"auto", "container"}:
+        if not runtime:
+            try:
+                runtime = _find_executable("", ["docker", "podman"])
+            except ValueError:
+                runtime = ""
+        if runtime and image:
+            container_name = f"tg-ws-mtproxy-{_safe_profile_token(profile)}"
+            run_cmd = [
+                runtime,
+                "run",
+                "--rm",
+                "-d",
+                "--name",
+                container_name,
+                "-p",
+                f"127.0.0.1:{port}:{port}",
+                "-p",
+                f"127.0.0.1:{stats_port}:{stats_port}",
+                "-v",
+                f"{files['dir']}:/opt/mtproxy",
+                image,
+                "mtproto-proxy",
+                *binary_cmd,
+            ]
+            result = subprocess.run(run_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+            if result.returncode == 0:
+                _save_sidecar_state(
+                    profile,
+                    {
+                        "mode": "container",
+                        "runtime": runtime,
+                        "container_name": container_name,
+                        "started_at": time.time(),
+                    },
+                )
+                if _wait_for_local_port(host, port):
+                    return sidecar_status(profile)
+                return ProfileDiagnosis(
+                    ok=False,
+                    status=DIAG_MTPROXY_UNAVAILABLE,
+                    summary=f"{profile.get('name', 'Sidecar')}: container started but {host}:{port} did not open in time",
+                    details=[result.stdout.strip() or result.stderr.strip()],
+                )
+            return ProfileDiagnosis(
+                ok=False,
+                status=DIAG_MTPROXY_UNAVAILABLE,
+                summary=f"{profile.get('name', 'Sidecar')}: container start failed",
+                details=[result.stderr.strip() or result.stdout.strip() or "no runtime output"],
+            )
+
+    return ProfileDiagnosis(
+        ok=False,
+        status=DIAG_MTPROXY_UNAVAILABLE,
+        summary=f"{profile.get('name', 'Sidecar')}: no supported binary or container runtime available",
+        details=[
+            "binary: configure binary_path or install mtproto-proxy",
+            "container: set container_runtime/container_image or install docker/podman",
+        ],
+    )
+
+
+def stop_sidecar_profile(profile: dict[str, Any]) -> ProfileDiagnosis:
+    state = _load_sidecar_state(profile)
+    if not state:
+        return ProfileDiagnosis(
+            ok=True,
+            status=DIAG_DISABLED,
+            summary=f"{profile.get('name', 'Sidecar')}: sidecar is already stopped",
+            details=[],
+        )
+
+    if state.get("mode") == "binary":
+        pid = int(state.get("pid", 0) or 0)
+        if pid and _pid_is_running(pid):
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
+            deadline = time.monotonic() + 3.0
+            while _pid_is_running(pid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if _pid_is_running(pid):
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
+        _clear_sidecar_state(profile)
+        return ProfileDiagnosis(
+            ok=True,
+            status=DIAG_DISABLED,
+            summary=f"{profile.get('name', 'Sidecar')}: sidecar binary stopped",
+            details=[],
+        )
+
+    if state.get("mode") == "container":
+        runtime = str(state.get("runtime") or "")
+        name = str(state.get("container_name") or "")
+        if runtime and name:
+            subprocess.run([runtime, "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        _clear_sidecar_state(profile)
+        return ProfileDiagnosis(
+            ok=True,
+            status=DIAG_DISABLED,
+            summary=f"{profile.get('name', 'Sidecar')}: sidecar container stopped",
+            details=[],
+        )
+
+    _clear_sidecar_state(profile)
+    return ProfileDiagnosis(
+        ok=True,
+        status=DIAG_DISABLED,
+        summary=f"{profile.get('name', 'Sidecar')}: sidecar state cleared",
+        details=[],
+    )
+
+
 def _probe_ipv6_telegram(timeout: float) -> tuple[bool, str]:
     last_error = "no IPv6 probe attempted"
     for host in _TG_IPV6_PROBES:
@@ -357,9 +834,11 @@ def _diagnose_wss_profile(profile: dict[str, Any], timeout: float) -> ProfileDia
     dc_opt = parse_dc_ip_list(list(runtime_cfg["dc_ip"]))
     host = str(runtime_cfg["listen_host"])
     port = int(runtime_cfg["port"])
-    details = [f"local endpoint {host}:{port}"]
+    address_family = _normalize_address_family(runtime_cfg.get("address_family"))
+    details = [f"local endpoint {host}:{port}", f"address_family={address_family}"]
 
-    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
+    local_family = _socket.AF_INET6 if ":" in host else _socket.AF_INET
+    with _socket.socket(local_family, _socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         try:
             listening = sock.connect_ex((host, port)) == 0
@@ -387,6 +866,7 @@ def _diagnose_wss_profile(profile: dict[str, Any], timeout: float) -> ProfileDia
             domain,
             make_ssl_context(bool(runtime_cfg.get("verify_tls", False))),
             timeout=timeout,
+            address_family=address_family,
         )
         await ws.close()
 
@@ -431,7 +911,11 @@ def _diagnose_mtproto_profile(profile: dict[str, Any], timeout: float) -> Profil
     name = str(profile.get("name") or profile.get("id") or "profile")
     server = str(profile.get("server") or profile.get("listen_host") or "").strip()
     port = int(profile.get("port", 443))
-    details = [f"target {server}:{port}"]
+    address_family = _normalize_address_family(profile.get("address_family"))
+    dns_override = str(profile.get("diagnostic_dns_override") or "").strip()
+    details = [f"target {server}:{port}", f"address_family={address_family}"]
+    if dns_override:
+        details.append(f"diagnostic_dns_override={dns_override}")
 
     try:
         url = build_profile_telegram_url(profile)
@@ -444,7 +928,12 @@ def _diagnose_mtproto_profile(profile: dict[str, Any], timeout: float) -> Profil
         )
 
     try:
-        addrinfo = _socket.getaddrinfo(server, port, proto=_socket.IPPROTO_TCP)
+        addrinfo = _resolve_target(
+            server,
+            port,
+            address_family=address_family,
+            diagnostic_dns_override=dns_override,
+        )
     except OSError as exc:
         return ProfileDiagnosis(
             ok=False,
@@ -508,8 +997,14 @@ def diagnose_profile(profile: dict[str, Any], timeout: float = 3.0) -> ProfileDi
     if profile_type == PROFILE_WSS_LOCAL:
         return _diagnose_wss_profile(profile, timeout)
 
-    if profile_type in {PROFILE_MTPROTO_EXTERNAL, PROFILE_MTPROTO_SIDECAR}:
+    if profile_type == PROFILE_MTPROTO_EXTERNAL:
         return _diagnose_mtproto_profile(profile, timeout)
+
+    if profile_type == PROFILE_MTPROTO_SIDECAR:
+        sidecar_diag = sidecar_status(profile)
+        if sidecar_diag.ok:
+            return _diagnose_mtproto_profile(profile, timeout)
+        return sidecar_diag
 
     return ProfileDiagnosis(
         ok=True,
@@ -693,9 +1188,16 @@ class RawWebSocket:
         ssl_ctx: ssl.SSLContext,
         path: str = "/apiws",
         timeout: float = 10.0,
+        address_family: str = ADDRESS_AUTO,
     ) -> "RawWebSocket":
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, 443, ssl=ssl_ctx, server_hostname=domain),
+            asyncio.open_connection(
+                ip,
+                443,
+                ssl=ssl_ctx,
+                server_hostname=domain,
+                family=_connection_family(ip, address_family),
+            ),
             timeout=timeout,
         )
 
@@ -1028,10 +1530,11 @@ async def _tcp_fallback(
     port: int,
     init: bytes,
     label: str,
+    address_family: str = ADDRESS_AUTO,
 ) -> bool:
     try:
         remote_reader, remote_writer = await asyncio.wait_for(
-            asyncio.open_connection(dst, port),
+            asyncio.open_connection(dst, port, family=_connection_family(dst, address_family)),
             timeout=10,
         )
     except Exception as exc:
@@ -1052,11 +1555,13 @@ class ProxyServer:
         port: int,
         dc_opt: Dict[int, str],
         verify_tls: bool = False,
+        address_family: str = ADDRESS_AUTO,
     ) -> None:
         self.listen_host = listen_host
         self.port = port
         self.dc_opt = dc_opt
         self.ssl_ctx = make_ssl_context(verify_tls)
+        self.address_family = _normalize_address_family(address_family)
 
     async def handle_client(
         self,
@@ -1110,7 +1615,11 @@ class ProxyServer:
                 stage = "passthrough connect"
                 try:
                     remote_reader, remote_writer = await asyncio.wait_for(
-                        asyncio.open_connection(dst, port),
+                        asyncio.open_connection(
+                            dst,
+                            port,
+                            family=_connection_family(dst, self.address_family),
+                        ),
                         timeout=10,
                     )
                 except asyncio.TimeoutError:
@@ -1163,18 +1672,18 @@ class ProxyServer:
 
             if dc is None:
                 log.warning("[%s] unknown DC for %s:%d -> TCP fallback", label, dst, port)
-                await _tcp_fallback(reader, writer, dst, port, init, label)
+                await _tcp_fallback(reader, writer, dst, port, init, label, self.address_family)
                 return
 
             if dc not in self.dc_opt:
                 log.info("[%s] DC%d not configured for WS -> TCP fallback to %s:%d", label, dc, dst, port)
-                await _tcp_fallback(reader, writer, dst, port, init, label)
+                await _tcp_fallback(reader, writer, dst, port, init, label, self.address_family)
                 return
 
             dc_key = (dc, is_media)
             now = time.monotonic()
             if dc_key in _ws_blacklist or now < _dc_fail_until.get(dc_key, 0):
-                await _tcp_fallback(reader, writer, dst, port, init, label)
+                await _tcp_fallback(reader, writer, dst, port, init, label, self.address_family)
                 return
 
             ws = None
@@ -1195,7 +1704,12 @@ class ProxyServer:
                     target_ip,
                 )
                 try:
-                    ws = await RawWebSocket.connect(target_ip, domain, self.ssl_ctx)
+                    ws = await RawWebSocket.connect(
+                        target_ip,
+                        domain,
+                        self.ssl_ctx,
+                        address_family=self.address_family,
+                    )
                     all_redirects = False
                     break
                 except WsHandshakeError as exc:
@@ -1217,7 +1731,7 @@ class ProxyServer:
                     _ws_blacklist.add(dc_key)
                 else:
                     _dc_fail_until[dc_key] = now + _DC_FAIL_COOLDOWN
-                await _tcp_fallback(reader, writer, dst, port, init, label)
+                await _tcp_fallback(reader, writer, dst, port, init, label, self.address_family)
                 return
 
             _dc_fail_until.pop(dc_key, None)
@@ -1294,6 +1808,7 @@ class ProxyServer:
             "TLS verification: %s",
             "enabled" if self.ssl_ctx.verify_mode != ssl.CERT_NONE else "disabled",
         )
+        log.info("Address family: %s", self.address_family)
         for dc, ip in sorted(self.dc_opt.items()):
             log.info("DC%d via %s", dc, ip)
 
@@ -1331,6 +1846,7 @@ def runtime_config_from_profile(profile: dict[str, Any]) -> dict[str, Any]:
         "dc_ip": list(profile.get("dc_ip") or []),
         "verbose": bool(profile.get("verbose", False)),
         "verify_tls": bool(profile.get("verify_tls", False)),
+        "address_family": _normalize_address_family(profile.get("address_family")),
     }
 
 
@@ -1349,6 +1865,8 @@ def normalize_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
         runtime_cfg["verbose"] = True
     if args.verify_tls:
         runtime_cfg["verify_tls"] = True
+    if getattr(args, "address_family", None):
+        runtime_cfg["address_family"] = _normalize_address_family(args.address_family)
 
     return runtime_cfg
 
@@ -1360,6 +1878,7 @@ async def run_from_config(cfg: dict[str, Any]) -> None:
         port=int(cfg["port"]),
         dc_opt=dc_opt,
         verify_tls=bool(cfg.get("verify_tls", False)),
+        address_family=str(cfg.get("address_family") or ADDRESS_AUTO),
     )
     await server.run()
 
@@ -1423,6 +1942,69 @@ def cmd_check_profile(args: argparse.Namespace) -> int:
     return 0 if diagnosis.ok else 1
 
 
+def cmd_prepare_sidecar(args: argparse.Namespace) -> int:
+    cfg_path = Path(args.config).expanduser() if args.config else None
+    cfg = load_config(cfg_path)
+    profile = get_profile(cfg, getattr(args, "profile", None))
+    try:
+        updated = prepare_sidecar_profile(profile, refresh=bool(args.refresh))
+    except Exception as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    for index, existing in enumerate(cfg["profiles"]):
+        if existing.get("id") == updated.get("id"):
+            cfg["profiles"][index] = updated
+            break
+    save_config(cfg, cfg_path)
+    print(f"OK: prepared {updated.get('name', updated.get('id', 'sidecar'))}")
+    for name, path in sidecar_files(updated).items():
+        if name == "dir":
+            print(f"- {name}={path}")
+    return 0
+
+
+def cmd_start_sidecar(args: argparse.Namespace) -> int:
+    cfg_path = Path(args.config).expanduser() if args.config else None
+    cfg = load_config(cfg_path)
+    profile = get_profile(cfg, getattr(args, "profile", None))
+    try:
+        diagnosis = start_sidecar_profile(profile)
+    except Exception as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    save_config(cfg, cfg_path)
+    print(("OK: " if diagnosis.ok else "FAIL: ") + f"{diagnosis.status}: {diagnosis.summary}")
+    for detail in diagnosis.details:
+        print(f"- {detail}")
+    return 0 if diagnosis.ok else 1
+
+
+def cmd_stop_sidecar(args: argparse.Namespace) -> int:
+    cfg = load_config(Path(args.config).expanduser() if args.config else None)
+    profile = get_profile(cfg, getattr(args, "profile", None))
+    try:
+        diagnosis = stop_sidecar_profile(profile)
+    except Exception as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    print(("OK: " if diagnosis.ok else "FAIL: ") + f"{diagnosis.status}: {diagnosis.summary}")
+    return 0 if diagnosis.ok else 1
+
+
+def cmd_sidecar_status(args: argparse.Namespace) -> int:
+    cfg = load_config(Path(args.config).expanduser() if args.config else None)
+    profile = get_profile(cfg, getattr(args, "profile", None))
+    try:
+        diagnosis = sidecar_status(profile)
+    except Exception as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    print(("OK: " if diagnosis.ok else "FAIL: ") + f"{diagnosis.status}: {diagnosis.summary}")
+    for detail in diagnosis.details:
+        print(f"- {detail}")
+    return 0 if diagnosis.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Telegram Desktop WebSocket bridge proxy for Linux")
     subparsers = parser.add_subparsers(dest="command")
@@ -1433,6 +2015,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--listen-host", help="Listen host; default 127.0.0.1")
     run_parser.add_argument("--port", type=int, help="SOCKS5 listen port")
     run_parser.add_argument("--dc-ip", action="append", help="DC:IP mapping; may be passed multiple times")
+    run_parser.add_argument(
+        "--address-family",
+        choices=[ADDRESS_AUTO, ADDRESS_PREFER_IPV4, ADDRESS_PREFER_IPV6],
+        help="Preferred address family for diagnostics/runtime config",
+    )
     run_parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
     run_parser.add_argument("--verify-tls", action="store_true", help="Enable TLS certificate validation")
     run_parser.set_defaults(func=cmd_run)
@@ -1452,6 +2039,27 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--profile", help="Profile id; defaults to active_profile")
     check_parser.set_defaults(func=cmd_check_profile)
 
+    prepare_sidecar_parser = subparsers.add_parser("prepare-sidecar", help="Download official MTProxy files and initialize sidecar secret")
+    prepare_sidecar_parser.add_argument("--config", help="Path to config.json")
+    prepare_sidecar_parser.add_argument("--profile", help="Sidecar profile id; defaults to active_profile")
+    prepare_sidecar_parser.add_argument("--refresh", action="store_true", help="Refresh proxy-secret and proxy-multi.conf")
+    prepare_sidecar_parser.set_defaults(func=cmd_prepare_sidecar)
+
+    start_sidecar_parser = subparsers.add_parser("start-sidecar", help="Start the selected MTProxy sidecar profile")
+    start_sidecar_parser.add_argument("--config", help="Path to config.json")
+    start_sidecar_parser.add_argument("--profile", help="Sidecar profile id; defaults to active_profile")
+    start_sidecar_parser.set_defaults(func=cmd_start_sidecar)
+
+    stop_sidecar_parser = subparsers.add_parser("stop-sidecar", help="Stop the selected MTProxy sidecar profile")
+    stop_sidecar_parser.add_argument("--config", help="Path to config.json")
+    stop_sidecar_parser.add_argument("--profile", help="Sidecar profile id; defaults to active_profile")
+    stop_sidecar_parser.set_defaults(func=cmd_stop_sidecar)
+
+    sidecar_status_parser = subparsers.add_parser("sidecar-status", help="Show current status of the selected MTProxy sidecar profile")
+    sidecar_status_parser.add_argument("--config", help="Path to config.json")
+    sidecar_status_parser.add_argument("--profile", help="Sidecar profile id; defaults to active_profile")
+    sidecar_status_parser.set_defaults(func=cmd_sidecar_status)
+
     paths_parser = subparsers.add_parser("paths", help="Print XDG config and log paths")
     paths_parser.set_defaults(func=cmd_paths)
 
@@ -1463,6 +2071,7 @@ def build_parser() -> argparse.ArgumentParser:
         listen_host=None,
         port=None,
         dc_ip=None,
+        address_family=None,
         verbose=False,
         verify_tls=False,
     )
@@ -1477,6 +2086,10 @@ def main() -> int:
         "init-config",
         "open-in-telegram",
         "check-profile",
+        "prepare-sidecar",
+        "start-sidecar",
+        "stop-sidecar",
+        "sidecar-status",
         "paths",
         "-h",
         "--help",

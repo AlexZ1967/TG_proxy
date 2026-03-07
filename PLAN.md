@@ -23,7 +23,8 @@
 - `done`: desktop-интеграция и упаковка под Linux Mint
 - `done`: подготовка resilience roadmap для следующего минорного цикла
 - `done`: первый этап roadmap, profile-aware конфиг и переключение профилей
-- `in_progress`: практический backup-режим для `mtproto_external`
+- `done`: практический backup-режим для `mtproto_external`
+- `done`: локальный `MTProxy` sidecar и network hardening для текущего цикла
 
 ## Work Plan
 
@@ -48,8 +49,8 @@
    Результат: подтверждение, что трафик Telegram идет через локальный SOCKS5 и нет явных регрессий.
 
 6. Ужесточить и стабилизировать проект.
-   Статус: `in_progress`
-   Результат: решение по TLS verification, дополнительным DC mapping, логированию, обработке ошибок и portable packaging.
+   Статус: `done`
+   Результат: решение по TLS verification, дополнительным DC mapping, логированию, обработке ошибок, диагностике и portable packaging.
 
 7. Добавить desktop-интеграцию для Linux Mint.
    Статус: `done`
@@ -75,6 +76,10 @@
    Статус: `done`
    Результат: self-check показывает IPv4 probe, IPv6 probe и учитывает недавние события `WS`/`TCP fallback` из `proxy.log`.
 
+13. Добавить локальный `MTProxy` sidecar и network hardening.
+   Статус: `done`
+   Результат: `prepare/start/stop/status` для sidecar, GUI lifecycle для `mtproto_sidecar`, `address_family`, `diagnostic_dns_override` и runtime-aware hardening для текущего цикла.
+
 ## Immediate Next Step
 
-Перейти к следующему блоку roadmap: либо `M5 Network Hardening`, либо `M3 Local MTProxy Sidecar`, в зависимости от того, что важнее раньше для реального использования.
+Закрыть текущий минорный цикл: ручная проверка sidecar-сценария на машине с установленным `mtproto-proxy` или `docker/podman`, затем выпуск релиза.

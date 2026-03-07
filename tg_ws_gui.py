@@ -37,6 +37,8 @@ class ProxyWindow(Gtk.ApplicationWindow):
         self.profile_name_entry: Gtk.Entry
         self.profile_type_label: Gtk.Label
         self.profile_check_label: Gtk.Label
+        self.address_family_combo: Gtk.ComboBoxText
+        self.diagnostic_dns_entry: Gtk.Entry
         self.profile_stack: Gtk.Stack
         self.host_entry: Gtk.Entry
         self.port_entry: Gtk.Entry
@@ -49,6 +51,12 @@ class ProxyWindow(Gtk.ApplicationWindow):
         self.sidecar_host_entry: Gtk.Entry
         self.sidecar_port_entry: Gtk.Entry
         self.sidecar_secret_entry: Gtk.Entry
+        self.sidecar_stats_port_entry: Gtk.Entry
+        self.sidecar_workers_entry: Gtk.Entry
+        self.sidecar_mode_combo: Gtk.ComboBoxText
+        self.sidecar_binary_path_entry: Gtk.Entry
+        self.sidecar_container_runtime_entry: Gtk.Entry
+        self.sidecar_container_image_entry: Gtk.Entry
         self.log_view: Gtk.TextView
         self.start_button: Gtk.Button
         self.stop_button: Gtk.Button
@@ -137,6 +145,22 @@ class ProxyWindow(Gtk.ApplicationWindow):
         self.profile_check_label.set_line_wrap(True)
         self.profile_check_label.set_max_width_chars(90)
         profile_grid.attach(self.profile_check_label, 1, 2, 3, 1)
+
+        family_label = Gtk.Label(label="Address family", xalign=0)
+        profile_grid.attach(family_label, 0, 3, 1, 1)
+        self.address_family_combo = Gtk.ComboBoxText()
+        self.address_family_combo.append(tg_ws_proxy.ADDRESS_AUTO, "Auto")
+        self.address_family_combo.append(tg_ws_proxy.ADDRESS_PREFER_IPV4, "Prefer IPv4")
+        self.address_family_combo.append(tg_ws_proxy.ADDRESS_PREFER_IPV6, "Prefer IPv6")
+        self.address_family_combo.set_active_id(tg_ws_proxy.ADDRESS_AUTO)
+        profile_grid.attach(self.address_family_combo, 1, 3, 1, 1)
+
+        dns_label = Gtk.Label(label="Diag DNS override", xalign=0)
+        profile_grid.attach(dns_label, 2, 3, 1, 1)
+        self.diagnostic_dns_entry = Gtk.Entry()
+        self.diagnostic_dns_entry.set_hexpand(True)
+        self.diagnostic_dns_entry.set_placeholder_text("Optional IP/host used only by Check Profile")
+        profile_grid.attach(self.diagnostic_dns_entry, 3, 3, 1, 1)
 
         self.profile_stack = Gtk.Stack()
         self.profile_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
@@ -329,7 +353,7 @@ class ProxyWindow(Gtk.ApplicationWindow):
         info = Gtk.Label(
             label=(
                 "Профиль для будущего локального MTProxy sidecar. Схема уже заведена в конфиг, "
-                "но lifecycle sidecar пока ещё не реализован."
+                "теперь sidecar можно подготовить и запустить через Start/Stop."
             ),
             xalign=0,
         )
@@ -358,6 +382,46 @@ class ProxyWindow(Gtk.ApplicationWindow):
         self.sidecar_secret_entry.set_invisible_char("*")
         self.sidecar_secret_entry.set_hexpand(True)
         grid.attach(self.sidecar_secret_entry, 1, 1, 3, 1)
+
+        stats_label = Gtk.Label(label="Stats port", xalign=0)
+        grid.attach(stats_label, 0, 2, 1, 1)
+        self.sidecar_stats_port_entry = Gtk.Entry()
+        self.sidecar_stats_port_entry.set_width_chars(8)
+        grid.attach(self.sidecar_stats_port_entry, 1, 2, 1, 1)
+
+        workers_label = Gtk.Label(label="Workers", xalign=0)
+        grid.attach(workers_label, 2, 2, 1, 1)
+        self.sidecar_workers_entry = Gtk.Entry()
+        self.sidecar_workers_entry.set_width_chars(8)
+        grid.attach(self.sidecar_workers_entry, 3, 2, 1, 1)
+
+        mode_label = Gtk.Label(label="Mode", xalign=0)
+        grid.attach(mode_label, 0, 3, 1, 1)
+        self.sidecar_mode_combo = Gtk.ComboBoxText()
+        self.sidecar_mode_combo.append("auto", "Auto")
+        self.sidecar_mode_combo.append("binary", "Binary")
+        self.sidecar_mode_combo.append("container", "Container")
+        self.sidecar_mode_combo.set_active_id("auto")
+        grid.attach(self.sidecar_mode_combo, 1, 3, 1, 1)
+
+        binary_label = Gtk.Label(label="Binary path", xalign=0)
+        grid.attach(binary_label, 0, 4, 1, 1)
+        self.sidecar_binary_path_entry = Gtk.Entry()
+        self.sidecar_binary_path_entry.set_hexpand(True)
+        grid.attach(self.sidecar_binary_path_entry, 1, 4, 3, 1)
+
+        runtime_label = Gtk.Label(label="Container runtime", xalign=0)
+        grid.attach(runtime_label, 0, 5, 1, 1)
+        self.sidecar_container_runtime_entry = Gtk.Entry()
+        self.sidecar_container_runtime_entry.set_hexpand(True)
+        self.sidecar_container_runtime_entry.set_placeholder_text("docker or podman")
+        grid.attach(self.sidecar_container_runtime_entry, 1, 5, 1, 1)
+
+        image_label = Gtk.Label(label="Container image", xalign=0)
+        grid.attach(image_label, 2, 5, 1, 1)
+        self.sidecar_container_image_entry = Gtk.Entry()
+        self.sidecar_container_image_entry.set_hexpand(True)
+        grid.attach(self.sidecar_container_image_entry, 3, 5, 1, 1)
         return box
 
     def _build_disabled_page(self) -> Gtk.Widget:
@@ -397,6 +461,12 @@ class ProxyWindow(Gtk.ApplicationWindow):
         buffer.insert(end_iter, text)
         mark = buffer.create_mark(None, buffer.get_end_iter(), False)
         self.log_view.scroll_mark_onscreen(mark)
+
+    def _current_log_path(self) -> Path:
+        profile = self._selected_profile()
+        if str(profile.get("type")) == tg_ws_proxy.PROFILE_MTPROTO_SIDECAR:
+            return tg_ws_proxy.sidecar_log_path(profile)
+        return tg_ws_proxy.log_path()
 
     def _set_profile_check_result(self, ok: Optional[bool], message: str) -> None:
         escaped = GLib.markup_escape_text(message)
@@ -459,6 +529,7 @@ class ProxyWindow(Gtk.ApplicationWindow):
             "dc_ip": dc_lines,
             "verbose": self.verbose_check.get_active(),
             "verify_tls": self.verify_tls_check.get_active(),
+            "address_family": self.address_family_combo.get_active_id() or tg_ws_proxy.ADDRESS_AUTO,
         }
 
     def _mtproto_profile_from_widgets(self, profile: dict) -> dict:
@@ -468,6 +539,8 @@ class ProxyWindow(Gtk.ApplicationWindow):
             "server": self.mtproto_server_entry.get_text().strip(),
             "port": self._coerce_port(self.mtproto_port_entry.get_text(), "Port"),
             "secret": self.mtproto_secret_entry.get_text().strip(),
+            "address_family": self.address_family_combo.get_active_id() or tg_ws_proxy.ADDRESS_AUTO,
+            "diagnostic_dns_override": self.diagnostic_dns_entry.get_text().strip(),
         }
 
     def _sidecar_profile_from_widgets(self, profile: dict) -> dict:
@@ -477,6 +550,14 @@ class ProxyWindow(Gtk.ApplicationWindow):
             "listen_host": self.sidecar_host_entry.get_text().strip() or tg_ws_proxy.DEFAULT_HOST,
             "port": self._coerce_port(self.sidecar_port_entry.get_text(), "Port"),
             "secret": self.sidecar_secret_entry.get_text().strip(),
+            "stats_port": self._coerce_port(self.sidecar_stats_port_entry.get_text(), "Stats port"),
+            "workers": max(1, int(self.sidecar_workers_entry.get_text().strip() or "1")),
+            "mode": self.sidecar_mode_combo.get_active_id() or "auto",
+            "binary_path": self.sidecar_binary_path_entry.get_text().strip(),
+            "container_runtime": self.sidecar_container_runtime_entry.get_text().strip(),
+            "container_image": self.sidecar_container_image_entry.get_text().strip(),
+            "address_family": self.address_family_combo.get_active_id() or tg_ws_proxy.ADDRESS_AUTO,
+            "diagnostic_dns_override": self.diagnostic_dns_entry.get_text().strip(),
         }
 
     def _disabled_profile_from_widgets(self, profile: dict) -> dict:
@@ -533,6 +614,12 @@ class ProxyWindow(Gtk.ApplicationWindow):
         self.profile_type_label.set_text(type_labels.get(profile_type, profile_type))
         self.profile_stack.set_visible_child_name(profile_type)
         self._set_profile_check_result(None, "Нажмите Check Profile для проверки активного маршрута.")
+        self.log_offset = 0
+        self.log_view.get_buffer().set_text("")
+        self.address_family_combo.set_active_id(
+            str(profile.get("address_family") or tg_ws_proxy.ADDRESS_AUTO)
+        )
+        self.diagnostic_dns_entry.set_text(str(profile.get("diagnostic_dns_override") or ""))
 
         if profile_type == tg_ws_proxy.PROFILE_WSS_LOCAL:
             self.host_entry.set_text(str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST))
@@ -548,6 +635,12 @@ class ProxyWindow(Gtk.ApplicationWindow):
             self.sidecar_host_entry.set_text(str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST))
             self.sidecar_port_entry.set_text(str(profile.get("port", 11080)))
             self.sidecar_secret_entry.set_text(str(profile.get("secret") or ""))
+            self.sidecar_stats_port_entry.set_text(str(profile.get("stats_port", 11081)))
+            self.sidecar_workers_entry.set_text(str(profile.get("workers", 1)))
+            self.sidecar_mode_combo.set_active_id(str(profile.get("mode") or "auto"))
+            self.sidecar_binary_path_entry.set_text(str(profile.get("binary_path") or ""))
+            self.sidecar_container_runtime_entry.set_text(str(profile.get("container_runtime") or ""))
+            self.sidecar_container_image_entry.set_text(str(profile.get("container_image") or ""))
 
     def _profile_endpoint_text(self, profile: dict) -> str:
         profile_type = str(profile.get("type"))
@@ -557,7 +650,10 @@ class ProxyWindow(Gtk.ApplicationWindow):
             server = str(profile.get("server") or "<empty>")
             return f"MTProto {server}:{profile.get('port', 443)}"
         if profile_type == tg_ws_proxy.PROFILE_MTPROTO_SIDECAR:
-            return f"Sidecar {profile.get('listen_host', tg_ws_proxy.DEFAULT_HOST)}:{profile.get('port', 11080)}"
+            return (
+                f"Sidecar {profile.get('listen_host', tg_ws_proxy.DEFAULT_HOST)}:{profile.get('port', 11080)} "
+                f"mode={profile.get('mode', 'auto')}"
+            )
         return "No local proxy endpoint"
 
     def _spawn_proxy(self) -> subprocess.Popen[str]:
@@ -616,7 +712,21 @@ class ProxyWindow(Gtk.ApplicationWindow):
 
     def _on_start(self, _: Gtk.Button) -> None:
         profile = self._selected_profile()
-        if str(profile.get("type")) != tg_ws_proxy.PROFILE_WSS_LOCAL:
+        profile_type = str(profile.get("type"))
+        if profile_type == tg_ws_proxy.PROFILE_MTPROTO_SIDECAR:
+            if not self.save_config():
+                return
+            diagnosis = tg_ws_proxy.start_sidecar_profile(self._selected_profile())
+            tg_ws_proxy.save_config(self.cfg, self.config_file)
+            self.cfg = tg_ws_proxy.load_config(self.config_file)
+            self._set_profile_check_result(diagnosis.ok, self._diagnosis_message(diagnosis))
+            self._append_log_line(
+                f"[gui] Sidecar start: {'OK' if diagnosis.ok else 'FAIL'} - {self._diagnosis_message(diagnosis)}"
+            )
+            self._refresh_status()
+            return
+
+        if profile_type != tg_ws_proxy.PROFILE_WSS_LOCAL:
             self._show_message(
                 Gtk.MessageType.INFO,
                 "No local runner",
@@ -647,6 +757,13 @@ class ProxyWindow(Gtk.ApplicationWindow):
         GLib.timeout_add(700, self._refresh_status_once)
 
     def _on_stop(self, _: Gtk.Button) -> None:
+        profile = self._selected_profile()
+        if str(profile.get("type")) == tg_ws_proxy.PROFILE_MTPROTO_SIDECAR:
+            diagnosis = tg_ws_proxy.stop_sidecar_profile(profile)
+            self._set_profile_check_result(diagnosis.ok, self._diagnosis_message(diagnosis))
+            self._append_log_line(f"[gui] Sidecar stop: {self._diagnosis_message(diagnosis)}")
+            self._refresh_status()
+            return
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             try:
@@ -701,7 +818,7 @@ class ProxyWindow(Gtk.ApplicationWindow):
 
     def _on_open_log(self, _: Gtk.Button) -> None:
         try:
-            subprocess.run(["xdg-open", str(tg_ws_proxy.log_path())], check=False)
+            subprocess.run(["xdg-open", str(self._current_log_path())], check=False)
         except Exception as exc:
             self._show_message(Gtk.MessageType.ERROR, "Open log failed", str(exc))
 
@@ -737,14 +854,15 @@ class ProxyWindow(Gtk.ApplicationWindow):
             self.start_button.set_sensitive(False)
             self.stop_button.set_sensitive(False)
         elif profile_type == tg_ws_proxy.PROFILE_MTPROTO_SIDECAR:
-            host = str(profile.get("listen_host") or tg_ws_proxy.DEFAULT_HOST)
-            port = int(profile.get("port", 11080))
-            if self._is_listening(host, port):
-                self.status_label.set_markup("<b>Sidecar endpoint detected</b>")
+            diagnosis = tg_ws_proxy.sidecar_status(profile)
+            if diagnosis.ok:
+                self.status_label.set_markup("<b>Sidecar running</b>")
+                self.start_button.set_sensitive(False)
+                self.stop_button.set_sensitive(True)
             else:
-                self.status_label.set_markup("<b>Sidecar profile</b>")
-            self.start_button.set_sensitive(False)
-            self.stop_button.set_sensitive(False)
+                self.status_label.set_markup("<b>Sidecar stopped</b>")
+                self.start_button.set_sensitive(True)
+                self.stop_button.set_sensitive(False)
         else:
             self.status_label.set_markup("<b>Disabled profile</b>")
             self.start_button.set_sensitive(False)
@@ -757,7 +875,7 @@ class ProxyWindow(Gtk.ApplicationWindow):
         )
 
     def _poll_log(self) -> None:
-        path = tg_ws_proxy.log_path()
+        path = self._current_log_path()
         try:
             if path.exists():
                 with path.open("r", encoding="utf-8", errors="replace") as f:

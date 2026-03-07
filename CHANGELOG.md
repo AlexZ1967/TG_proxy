@@ -11,6 +11,7 @@
 - Общий helper для `tg://socks` и `tg://proxy`, чтобы `Open Telegram` мог работать от активного профиля.
 - Кнопка `Copy Link` в GUI для копирования готового `tg://socks` / `tg://proxy` link от активного профиля.
 - CLI-команда `check-profile` и кнопка `Check Profile` в GUI для проверки активного маршрута.
+- CLI-команды `prepare-sidecar`, `start-sidecar`, `stop-sidecar`, `sidecar-status` для локального `MTProxy` sidecar.
 
 ### Changed
 
@@ -21,6 +22,8 @@
 - Для `mtproto_external` добавлен практический self-check: resolve и TCP probe до target endpoint.
 - Self-check переведён на диагностические статусы с деталями маршрута: `WSS OK`, `DNS issue`, `TCP fallback only`, `IPv6 unavailable`, `MTProxy unavailable`.
 - Диагностика `check-profile` теперь показывает IPv4 probe, IPv6 probe и недавний live-traffic срез из `proxy.log`.
+- Добавлены `address_family` и `diagnostic_dns_override` для network hardening и безопасной self-test диагностики без изменения системного DNS.
+- Профиль `mtproto_sidecar` переведён из схемы в рабочий lifecycle: подготовка official `proxy-secret`/`proxy-multi.conf`, генерация client secret, запуск/остановка и статус из CLI/GUI.
 
 ## [0.3.0] - 2026-03-06
 

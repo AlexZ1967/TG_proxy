@@ -86,6 +86,15 @@ python3 -m venv .venv
 - IPv6 probe для Telegram IPv6 endpoint;
 - недавний live-traffic срез из `proxy.log` (`ws_events` и `tcp_fallback_events`).
 
+Для локального sidecar доступны отдельные CLI-команды:
+
+```bash
+./run_proxy.sh prepare-sidecar --profile mtproto-sidecar
+./run_proxy.sh start-sidecar --profile mtproto-sidecar
+./run_proxy.sh sidecar-status --profile mtproto-sidecar
+./run_proxy.sh stop-sidecar --profile mtproto-sidecar
+```
+
 Открыть настройку прокси в Telegram Desktop:
 
 ```bash
@@ -121,7 +130,8 @@ python3 -m venv .venv
         "4:149.154.167.220"
       ],
       "verbose": false,
-      "verify_tls": false
+      "verify_tls": false,
+      "address_family": "auto"
     },
     {
       "id": "mtproto-external",
@@ -129,9 +139,28 @@ python3 -m venv .venv
       "type": "mtproto_external",
       "server": "",
       "port": 443,
-      "secret": ""
+      "secret": "",
+      "address_family": "auto",
+      "diagnostic_dns_override": ""
+    },
+    {
+      "id": "mtproto-sidecar",
+      "name": "Local MTProxy Sidecar",
+      "type": "mtproto_sidecar",
+      "listen_host": "127.0.0.1",
+      "port": 11080,
+      "secret": "",
+      "stats_port": 11081,
+      "workers": 1,
+      "proxy_tag": "",
+      "mode": "auto",
+      "binary_path": "",
+      "container_runtime": "",
+      "container_image": "",
+      "address_family": "auto",
+      "diagnostic_dns_override": ""
     }
-  ],
+  ]
 }
 ```
 
@@ -202,6 +231,9 @@ journalctl --user -u tg-ws-proxy.service -f
 - Для MTProto-профилей GUI теперь умеет копировать готовый `tg://proxy` link и заранее валидирует `server:port`.
 - В CLI доступна команда `check-profile`, чтобы быстро проверить активный или указанный профиль без запуска GUI.
 - Self-check теперь отдаёт не только `OK/FAIL`, но и диагностический статус с деталями маршрута.
+- Параметр `address_family` поддерживает `auto`, `prefer_ipv4` и `prefer_ipv6`.
+- Поле `diagnostic_dns_override` используется только в self-check и не меняет системный DNS.
+- Для `mtproto_sidecar` доступны lifecycle-команды и запуск через GUI `Start/Stop`.
 
 ## Следующий этап
 

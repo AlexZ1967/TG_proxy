@@ -73,6 +73,13 @@ python3 -m venv .venv
 ./run_proxy.sh check-profile
 ```
 
+Команда и одноимённая кнопка в GUI возвращают диагностический статус, например:
+- `WSS OK`
+- `DNS issue`
+- `TCP fallback only`
+- `IPv6 unavailable`
+- `MTProxy unavailable`
+
 Открыть настройку прокси в Telegram Desktop:
 
 ```bash
@@ -188,6 +195,7 @@ journalctl --user -u tg-ws-proxy.service -f
 - GUI теперь работает с profile-aware конфигом: активный профиль выбирается прямо в окне и сохраняется в `config.json`.
 - Для MTProto-профилей GUI теперь умеет копировать готовый `tg://proxy` link и заранее валидирует `server:port`.
 - В CLI доступна команда `check-profile`, чтобы быстро проверить активный или указанный профиль без запуска GUI.
+- Self-check теперь отдаёт не только `OK/FAIL`, но и диагностический статус с деталями маршрута.
 
 ## Следующий этап
 

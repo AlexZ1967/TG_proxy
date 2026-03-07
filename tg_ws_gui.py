@@ -407,6 +407,12 @@ class ProxyWindow(Gtk.ApplicationWindow):
         else:
             self.profile_check_label.set_markup(f"<span foreground='#555753'>{escaped}</span>")
 
+    @staticmethod
+    def _diagnosis_message(diagnosis: tg_ws_proxy.ProfileDiagnosis) -> str:
+        if diagnosis.details:
+            return f"{diagnosis.status}: {diagnosis.summary} | " + " | ".join(diagnosis.details)
+        return f"{diagnosis.status}: {diagnosis.summary}"
+
     def _populate_profile_combo(self) -> None:
         self._changing_profile = True
         self.profile_combo.remove_all()
@@ -686,9 +692,12 @@ class ProxyWindow(Gtk.ApplicationWindow):
         if not self._sync_selected_profile_to_cfg():
             return
         profile = self._selected_profile()
-        ok, message = tg_ws_proxy.check_profile(profile)
-        self._set_profile_check_result(ok, message)
-        self._append_log_line(f"[gui] Profile check: {'OK' if ok else 'FAIL'} - {message}")
+        diagnosis = tg_ws_proxy.diagnose_profile(profile)
+        message = self._diagnosis_message(diagnosis)
+        self._set_profile_check_result(diagnosis.ok, message)
+        self._append_log_line(
+            f"[gui] Profile check: {'OK' if diagnosis.ok else 'FAIL'} - {message}"
+        )
 
     def _on_open_log(self, _: Gtk.Button) -> None:
         try:

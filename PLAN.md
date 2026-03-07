@@ -64,9 +64,13 @@
    Результат: новый формат `active_profile + profiles`, GUI selector активного профиля, совместимая миграция со старого плоского `config.json`.
 
 10. Довести `mtproto_external` до практического backup-режима.
-   Статус: `in_progress`
+   Статус: `done`
    Результат: валидация `server:port`, `tg://proxy` export/open, `Copy Link`, GUI self-check и CLI `check-profile`.
+
+11. Вынести единые диагностические статусы в GUI и CLI.
+   Статус: `in_progress`
+   Результат: статусы `WSS OK`, `DNS issue`, `TCP fallback only`, `IPv6 unavailable`, `MTProxy unavailable` и одинаковая подача деталей маршрута.
 
 ## Immediate Next Step
 
-Перейти к `M4 Diagnostics`: добавить единые диагностические статусы и расширенный self-test для `DNS/IPv4/IPv6/WSS`.
+Расширить `M4 Diagnostics`: добавить явную проверку IPv4 и разделение `TCP fallback only` против `WSS OK` по живому трафику, а не только по probe.

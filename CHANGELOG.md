@@ -19,6 +19,7 @@
 - GUI и CLI переведены на profile-aware конфиг с совместимой миграцией legacy-JSON без `profiles`.
 - Для MTProto-профилей добавлена ранняя валидация `server:port` перед открытием Telegram или копированием proxy link.
 - Для `mtproto_external` добавлен практический self-check: resolve и TCP probe до target endpoint.
+- Self-check переведён на диагностические статусы с деталями маршрута: `WSS OK`, `DNS issue`, `TCP fallback only`, `IPv6 unavailable`, `MTProxy unavailable`.
 
 ## [0.3.0] - 2026-03-06
 

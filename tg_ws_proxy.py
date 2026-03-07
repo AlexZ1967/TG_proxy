@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import copy
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -28,6 +29,27 @@ PROFILE_MTPROTO_EXTERNAL = "mtproto_external"
 PROFILE_MTPROTO_SIDECAR = "mtproto_sidecar"
 PROFILE_DIRECT_DISABLED = "direct_disabled"
 DEFAULT_WSS_PROFILE_ID = "wss-local"
+
+DIAG_WSS_OK = "WSS OK"
+DIAG_MTPROXY_OK = "MTProxy OK"
+DIAG_TCP_FALLBACK_ONLY = "TCP fallback only"
+DIAG_DNS_ISSUE = "DNS issue"
+DIAG_IPV6_UNAVAILABLE = "IPv6 unavailable"
+DIAG_MTPROXY_UNAVAILABLE = "MTProxy unavailable"
+DIAG_DISABLED = "Disabled"
+
+_TG_IPV6_PROBES = [
+    "2001:67c:4e8:f002::a",
+    "2001:67c:4e8:f002::b",
+]
+
+
+@dataclass
+class ProfileDiagnosis:
+    ok: bool
+    status: str
+    summary: str
+    details: list[str]
 
 
 def make_default_profiles() -> list[dict[str, Any]]:
@@ -279,37 +301,160 @@ def validate_profile_telegram_target(profile: dict[str, Any]) -> str:
     return url
 
 
-def check_profile(profile: dict[str, Any], timeout: float = 3.0) -> tuple[bool, str]:
+def _probe_ipv6_telegram(timeout: float) -> tuple[bool, str]:
+    last_error = "no IPv6 probe attempted"
+    for host in _TG_IPV6_PROBES:
+        try:
+            with _socket.create_connection((host, 443), timeout=timeout):
+                return True, f"IPv6 probe reachable via {host}:443"
+        except OSError as exc:
+            last_error = f"{host}:443 -> {exc}"
+    return False, last_error
+
+
+def _diagnose_wss_profile(profile: dict[str, Any], timeout: float) -> ProfileDiagnosis:
+    name = str(profile.get("name") or profile.get("id") or "profile")
+    runtime_cfg = runtime_config_from_profile(profile)
+    dc_opt = parse_dc_ip_list(list(runtime_cfg["dc_ip"]))
+    host = str(runtime_cfg["listen_host"])
+    port = int(runtime_cfg["port"])
+    details = [f"local endpoint {host}:{port}"]
+
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        try:
+            listening = sock.connect_ex((host, port)) == 0
+        except OSError as exc:
+            return ProfileDiagnosis(
+                ok=False,
+                status=DIAG_TCP_FALLBACK_ONLY,
+                summary=f"{name}: cannot check local endpoint {host}:{port}: {exc}",
+                details=details,
+            )
+    details.append("local endpoint is listening" if listening else "local endpoint is not listening")
+
+    dc, target_ip = sorted(dc_opt.items())[0]
+    domain = _ws_domains(dc, False)[0]
+    details.append(f"test route DC{dc} -> {domain} via {target_ip}")
+
+    async def _probe_ws() -> None:
+        ws = await RawWebSocket.connect(
+            target_ip,
+            domain,
+            make_ssl_context(bool(runtime_cfg.get("verify_tls", False))),
+            timeout=timeout,
+        )
+        await ws.close()
+
+    try:
+        asyncio.run(_probe_ws())
+    except Exception as exc:
+        ipv6_ok, ipv6_note = _probe_ipv6_telegram(timeout)
+        details.append(ipv6_note if ipv6_ok else f"IPv6 probe failed: {ipv6_note}")
+        details.append(f"WSS probe failed: {exc}")
+        return ProfileDiagnosis(
+            ok=False,
+            status=DIAG_TCP_FALLBACK_ONLY,
+            summary=f"{name}: WSS probe failed for DC{dc}; local route will rely on TCP fallback",
+            details=details,
+        )
+
+    ipv6_ok, ipv6_note = _probe_ipv6_telegram(timeout)
+    details.append(ipv6_note if ipv6_ok else f"IPv6 probe failed: {ipv6_note}")
+    return ProfileDiagnosis(
+        ok=True,
+        status=DIAG_WSS_OK,
+        summary=f"{name}: upstream WSS probe succeeded for DC{dc} via {domain}",
+        details=details,
+    )
+
+
+def _diagnose_mtproto_profile(profile: dict[str, Any], timeout: float) -> ProfileDiagnosis:
+    name = str(profile.get("name") or profile.get("id") or "profile")
+    server = str(profile.get("server") or profile.get("listen_host") or "").strip()
+    port = int(profile.get("port", 443))
+    details = [f"target {server}:{port}"]
+
+    try:
+        url = build_profile_telegram_url(profile)
+    except ValueError as exc:
+        return ProfileDiagnosis(
+            ok=False,
+            status=DIAG_MTPROXY_UNAVAILABLE,
+            summary=f"{name}: {exc}",
+            details=details,
+        )
+
+    try:
+        addrinfo = _socket.getaddrinfo(server, port, proto=_socket.IPPROTO_TCP)
+    except OSError as exc:
+        return ProfileDiagnosis(
+            ok=False,
+            status=DIAG_DNS_ISSUE,
+            summary=f"{name}: cannot resolve {server}:{port}",
+            details=[*details, str(exc)],
+        )
+
+    families = {info[0] for info in addrinfo}
+    resolved = []
+    if _socket.AF_INET in families:
+        resolved.append("IPv4")
+    if _socket.AF_INET6 in families:
+        resolved.append("IPv6")
+    details.append("resolved families: " + (", ".join(resolved) if resolved else "unknown"))
+
+    last_error = "no address attempted"
+    for family, socktype, proto, _, sockaddr in addrinfo:
+        try:
+            with _socket.socket(family, socktype, proto) as sock:
+                sock.settimeout(timeout)
+                sock.connect(sockaddr)
+            return ProfileDiagnosis(
+                ok=True,
+                status=DIAG_MTPROXY_OK,
+                summary=f"{name}: target {server}:{port} is reachable; proxy link is ready",
+                details=[*details, f"proxy link {url}"],
+            )
+        except OSError as exc:
+            last_error = str(exc)
+
+    if _socket.AF_INET6 in families and _socket.AF_INET not in families and "Network is unreachable" in last_error:
+        return ProfileDiagnosis(
+            ok=False,
+            status=DIAG_IPV6_UNAVAILABLE,
+            summary=f"{name}: only IPv6 target is available, but IPv6 route is unreachable",
+            details=[*details, last_error],
+        )
+
+    return ProfileDiagnosis(
+        ok=False,
+        status=DIAG_MTPROXY_UNAVAILABLE,
+        summary=f"{name}: TCP connect to {server}:{port} failed",
+        details=[*details, last_error],
+    )
+
+
+def diagnose_profile(profile: dict[str, Any], timeout: float = 3.0) -> ProfileDiagnosis:
     profile_type = str(profile.get("type", PROFILE_DIRECT_DISABLED))
     name = str(profile.get("name") or profile.get("id") or "profile")
 
     if profile_type == PROFILE_WSS_LOCAL:
-        runtime_cfg = runtime_config_from_profile(profile)
-        parse_dc_ip_list(list(runtime_cfg["dc_ip"]))
-        host = str(runtime_cfg["listen_host"])
-        port = int(runtime_cfg["port"])
-        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            try:
-                listening = sock.connect_ex((host, port)) == 0
-            except OSError as exc:
-                return False, f"{name}: cannot check local endpoint {host}:{port}: {exc}"
-        if listening:
-            return True, f"{name}: local WSS endpoint is listening on {host}:{port}"
-        return True, f"{name}: config is valid, local WSS endpoint will use {host}:{port}"
+        return _diagnose_wss_profile(profile, timeout)
 
     if profile_type in {PROFILE_MTPROTO_EXTERNAL, PROFILE_MTPROTO_SIDECAR}:
-        url = validate_profile_telegram_target(profile)
-        server = str(profile.get("server") or profile.get("listen_host") or "").strip()
-        port = int(profile.get("port", 443))
-        try:
-            with _socket.create_connection((server, port), timeout=timeout):
-                pass
-        except OSError as exc:
-            return False, f"{name}: TCP connect to {server}:{port} failed: {exc}"
-        return True, f"{name}: reachable target {server}:{port}; link ready: {url}"
+        return _diagnose_mtproto_profile(profile, timeout)
 
-    return True, f"{name}: profile is disabled and does not expose a proxy target"
+    return ProfileDiagnosis(
+        ok=True,
+        status=DIAG_DISABLED,
+        summary=f"{name}: profile is disabled and does not expose a proxy target",
+        details=[],
+    )
+
+
+def check_profile(profile: dict[str, Any], timeout: float = 3.0) -> tuple[bool, str]:
+    diagnosis = diagnose_profile(profile, timeout=timeout)
+    return diagnosis.ok, f"{diagnosis.status}: {diagnosis.summary}"
 
 
 def open_telegram_url(url: str) -> str:
@@ -1201,12 +1346,14 @@ def cmd_check_profile(args: argparse.Namespace) -> int:
     cfg = load_config(Path(args.config).expanduser() if args.config else None)
     profile = get_profile(cfg, getattr(args, "profile", None))
     try:
-        ok, message = check_profile(profile)
+        diagnosis = diagnose_profile(profile)
     except ValueError as exc:
         print(f"FAIL: {exc}")
         return 1
-    print(("OK: " if ok else "FAIL: ") + message)
-    return 0 if ok else 1
+    print(("OK: " if diagnosis.ok else "FAIL: ") + f"{diagnosis.status}: {diagnosis.summary}")
+    for detail in diagnosis.details:
+        print(f"- {detail}")
+    return 0 if diagnosis.ok else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
